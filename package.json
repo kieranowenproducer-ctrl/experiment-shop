@@ -1,0 +1,16 @@
+{
+  "name": "bodymarket-labs-discord-shop",
+  "version": "1.0.0",
+  "description": "Discord shop bot (discord.js v14 + Postgres) for Bodymarket Labs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.15.3",
+    "pg": "^8.11.5"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
