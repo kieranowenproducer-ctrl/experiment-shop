@@ -2378,7 +2378,6 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (customId === "open_menu") {
-        await createOrGetShopSessionChannel(interaction.guild, interaction.user);
         return interaction.showModal(shippingModal());
       }
 
