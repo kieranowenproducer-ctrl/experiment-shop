@@ -1,7 +1,7 @@
 {
-  "name": "bodymarket-labs-discord-shop",
+  "name": "draft-store-discord-bot",
   "version": "1.0.0",
-  "description": "Discord shop bot (discord.js v14 + Postgres) for Bodymarket Labs",
+  "description": "Discord draft store bot (discord.js v14 + Postgres)",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
