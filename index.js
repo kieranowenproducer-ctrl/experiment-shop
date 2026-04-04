@@ -1,6 +1,14 @@
 // index.js
 // Discord Draft Store Bot (discord.js v14 + Postgres)
 // Safe generic store template
+// Includes:
+// - shop
+// - verification system
+// - stock control
+// - discount codes
+// - order handling
+// - catalog management
+// - moderation panel
 
 const {
   Client,
@@ -212,6 +220,100 @@ function bankDetailsText(orderId) {
     (extras.length ? `${extras.join("\n")}\n` : "") +
     `\n**Reference:** \`${ref}\``
   );
+}
+
+/* ------------------------- MODERATION HELPERS -------------------------- */
+
+function hasModPermission(member, permission) {
+  return member?.permissions?.has(permission);
+}
+
+function memberSearchMatches(member, search) {
+  const needle = String(search || "").trim().toLowerCase();
+  if (!needle) return false;
+
+  const username = String(member.user?.username || "").toLowerCase();
+  const displayName = String(member.displayName || "").toLowerCase();
+  const globalName = String(member.user?.globalName || "").toLowerCase();
+  const userId = String(member.id || "");
+
+  return (
+    username.includes(needle) ||
+    displayName.includes(needle) ||
+    globalName.includes(needle) ||
+    userId.includes(needle)
+  );
+}
+
+async function searchGuildMembers(guild, search, options = {}) {
+  const {
+    verifiedOnly = false,
+    excludeVerified = false,
+  } = options;
+
+  await guild.members.fetch();
+
+  return guild.members.cache
+    .filter((member) => {
+      if (!member || member.user?.bot) return false;
+
+      const isVerified = member.roles.cache.has(VERIFIED_ROLE_ID);
+
+      if (verifiedOnly && !isVerified) return false;
+      if (excludeVerified && isVerified) return false;
+
+      return memberSearchMatches(member, search);
+    })
+    .first(25);
+}
+
+function memberSelectOptions(members) {
+  return members.map((member) => ({
+    label: truncate100(member.displayName || member.user.username),
+    description: truncate100(`@${member.user.username} • ${member.id}`),
+    value: member.id,
+  }));
+}
+
+async function ensureTargetMember(guild, userId) {
+  return guild.members.fetch(userId).catch(() => null);
+}
+
+function canActOnTarget(staffMember, targetMember) {
+  if (!staffMember || !targetMember) {
+    return { ok: false, reason: "Could not resolve that member." };
+  }
+
+  if (staffMember.id === targetMember.id) {
+    return { ok: false, reason: "You cannot perform this action on yourself." };
+  }
+
+  const me = staffMember.guild.members.me;
+  if (!me) {
+    return { ok: false, reason: "Bot member not found." };
+  }
+
+  if (targetMember.id === me.id) {
+    return { ok: false, reason: "You cannot moderate the bot." };
+  }
+
+  if (staffMember.id !== staffMember.guild.ownerId) {
+    if (targetMember.roles.highest.position >= staffMember.roles.highest.position) {
+      return { ok: false, reason: "You cannot act on a member with an equal or higher role." };
+    }
+  }
+
+  if (targetMember.roles.highest.position >= me.roles.highest.position) {
+    return { ok: false, reason: "My role is not high enough to act on that member." };
+  }
+
+  return { ok: true };
+}
+
+function timeoutMsFromMinutes(minutes) {
+  const mins = Number(minutes || 0);
+  if (!Number.isFinite(mins) || mins <= 0) return null;
+  return mins * 60 * 1000;
 }
 
 /* ------------------------------- INIT DB -------------------------------- */
@@ -1378,9 +1480,9 @@ function verifyApproveComponents(userId) {
 }
 
 function staffPanelComponents() {
-const embed = new EmbedBuilder()
-  .setTitle("Staff Control Panel")
-  .setColor(0x2b2d31);
+  const embed = new EmbedBuilder()
+    .setTitle("Staff Control Panel")
+    .setColor(0x2b2d31);
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -1431,7 +1533,41 @@ const embed = new EmbedBuilder()
       .setStyle(ButtonStyle.Danger)
   );
 
-  return { embed, rows: [row1, row2, row3] };
+  const row4 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("staff_mod_add_verified")
+      .setLabel("Add Verified")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("staff_mod_remove_verified")
+      .setLabel("Remove Verified")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId("staff_mod_timeout")
+      .setLabel("Timeout")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("staff_mod_untimeout")
+      .setLabel("Remove Timeout")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  const row5 = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("staff_mod_kick")
+      .setLabel("Kick")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId("staff_mod_ban")
+      .setLabel("Ban")
+      .setStyle(ButtonStyle.Danger),
+    new ButtonBuilder()
+      .setCustomId("staff_mod_unban")
+      .setLabel("Unban")
+      .setStyle(ButtonStyle.Secondary)
+  );
+
+  return { embed, rows: [row1, row2, row3, row4, row5] };
 }
 
 /* ------------------------------- STAFF UI -------------------------------- */
@@ -1831,6 +1967,98 @@ function staffEditPriceModal(sku, currentPricePence) {
     .setValue((Number(currentPricePence || 0) / 100).toFixed(2));
 
   modal.addComponents(new ActionRowBuilder().addComponents(priceInput));
+  return modal;
+}
+
+function staffMemberSearchModal(action, title = "Find Member") {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_member_search_modal:${action}`)
+    .setTitle(title);
+
+  const searchInput = new TextInputBuilder()
+    .setCustomId("member_search")
+    .setLabel("Username, display name, or user ID")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Example: james");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(searchInput)
+  );
+
+  return modal;
+}
+
+function staffTimeoutModal(userId, label) {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_timeout_modal:${userId}`)
+    .setTitle("Timeout Member");
+
+  const minutesInput = new TextInputBuilder()
+    .setCustomId("timeout_minutes")
+    .setLabel("Timeout length in minutes")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Example: 60");
+
+  const reasonInput = new TextInputBuilder()
+    .setCustomId("timeout_reason")
+    .setLabel(`Reason for ${truncate100(label || userId)}`)
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setPlaceholder("Optional");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(minutesInput),
+    new ActionRowBuilder().addComponents(reasonInput)
+  );
+
+  return modal;
+}
+
+function staffBanModal(userId, label) {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_ban_modal:${userId}`)
+    .setTitle("Ban Member");
+
+  const reasonInput = new TextInputBuilder()
+    .setCustomId("ban_reason")
+    .setLabel(`Reason for ${truncate100(label || userId)}`)
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setPlaceholder("Optional");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(reasonInput)
+  );
+
+  return modal;
+}
+
+function staffUnbanModal() {
+  const modal = new ModalBuilder()
+    .setCustomId("staff_unban_modal")
+    .setTitle("Unban User");
+
+  const userIdInput = new TextInputBuilder()
+    .setCustomId("unban_user_id")
+    .setLabel("User ID")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Paste the user ID");
+
+  const reasonInput = new TextInputBuilder()
+    .setCustomId("unban_reason")
+    .setLabel("Reason")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setPlaceholder("Optional");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(userIdInput),
+    new ActionRowBuilder().addComponents(reasonInput)
+  );
+
   return modal;
 }
 
@@ -2379,6 +2607,69 @@ client.on("interactionCreate", async (interaction) => {
           content: "✅ All stock reset to default values.",
           components: [],
         });
+      }
+
+      /* ------------------------ MODERATION BUTTONS ------------------------ */
+
+      if (customId === "staff_mod_add_verified") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.showModal(
+          staffMemberSearchModal("add_verified", "Add Verified Role")
+        );
+      }
+
+      if (customId === "staff_mod_remove_verified") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.showModal(
+          staffMemberSearchModal("remove_verified", "Remove Verified Role")
+        );
+      }
+
+      if (customId === "staff_mod_timeout") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.showModal(
+          staffMemberSearchModal("timeout", "Find Member To Timeout")
+        );
+      }
+
+      if (customId === "staff_mod_untimeout") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.showModal(
+          staffMemberSearchModal("untimeout", "Find Member To Remove Timeout")
+        );
+      }
+
+      if (customId === "staff_mod_kick") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.showModal(
+          staffMemberSearchModal("kick", "Find Member To Kick")
+        );
+      }
+
+      if (customId === "staff_mod_ban") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.showModal(
+          staffMemberSearchModal("ban", "Find Member To Ban")
+        );
+      }
+
+      if (customId === "staff_mod_unban") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.showModal(staffUnbanModal());
       }
 
       /* ---------------------------- SHOP BUTTONS ---------------------------- */
@@ -2943,6 +3234,108 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
+      /* -------------------------- MODERATION MENUS ------------------------- */
+
+      if (customId.startsWith("staff_member_search_select:")) {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        const [, action] = customId.split(":");
+        const targetUserId = interaction.values[0];
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+        if (!targetMember) {
+          return interaction.update({
+            content: "Could not find that member.",
+            components: [],
+          });
+        }
+
+        const check = canActOnTarget(interaction.member, targetMember);
+        if (!check.ok) {
+          return interaction.update({
+            content: check.reason,
+            components: [],
+          });
+        }
+
+        if (action === "add_verified") {
+          if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+            return interaction.update({
+              content: "That member already has the verified role.",
+              components: [],
+            });
+          }
+
+          await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
+
+          return interaction.update({
+            content: `✅ Added verified role to <@${targetMember.id}>`,
+            components: [],
+          });
+        }
+
+        if (action === "remove_verified") {
+          if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+            return interaction.update({
+              content: "That member does not currently have the verified role.",
+              components: [],
+            });
+          }
+
+          await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+
+          return interaction.update({
+            content: `✅ Removed verified role from <@${targetMember.id}>`,
+            components: [],
+          });
+        }
+
+        if (action === "timeout") {
+          return interaction.showModal(
+            staffTimeoutModal(
+              targetMember.id,
+              targetMember.displayName || targetMember.user.username
+            )
+          );
+        }
+
+        if (action === "untimeout") {
+          if (!targetMember.isCommunicationDisabled()) {
+            return interaction.update({
+              content: "That member is not currently timed out.",
+              components: [],
+            });
+          }
+
+          await targetMember.timeout(null, `Timeout removed by ${interaction.user.tag}`);
+
+          return interaction.update({
+            content: `✅ Removed timeout from <@${targetMember.id}>`,
+            components: [],
+          });
+        }
+
+        if (action === "kick") {
+          await targetMember.kick(`Kicked by ${interaction.user.tag}`);
+
+          return interaction.update({
+            content: `✅ Kicked <@${targetMember.id}>`,
+            components: [],
+          });
+        }
+
+        if (action === "ban") {
+          return interaction.showModal(
+            staffBanModal(
+              targetMember.id,
+              targetMember.displayName || targetMember.user.username
+            )
+          );
+        }
+      }
+
       /* ------------------------------ SHOP MENUS ----------------------------- */
 
       if (customId === "select_category") {
@@ -3311,6 +3704,153 @@ client.on("interactionCreate", async (interaction) => {
 
         return interaction.reply({
           content: `✅ Discount code **${updated.code}** is now **${updated.is_active ? "active" : "inactive"}**.`,
+          flags: 64,
+        });
+      }
+
+      /* --------------------------- MODERATION MODALS --------------------------- */
+
+      if (customId.startsWith("staff_member_search_modal:")) {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        if (!isStaffChannel(interaction)) {
+          return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+        }
+
+        const [, action] = customId.split(":");
+        const search = interaction.fields.getTextInputValue("member_search")?.trim();
+
+        if (!search) {
+          return interaction.reply({ content: "Enter a search term.", flags: 64 });
+        }
+
+        let options = {};
+        if (action === "add_verified") {
+          options.excludeVerified = true;
+        }
+        if (action === "remove_verified") {
+          options.verifiedOnly = true;
+        }
+
+        const matches = await searchGuildMembers(interaction.guild, search, options);
+
+        if (!matches.length) {
+          return interaction.reply({
+            content: "No matching members found.",
+            flags: 64,
+          });
+        }
+
+        return interaction.reply({
+          content: "Choose a member:",
+          components: [
+            new ActionRowBuilder().addComponents(
+              new StringSelectMenuBuilder()
+                .setCustomId(`staff_member_search_select:${action}`)
+                .setPlaceholder("Select a member…")
+                .addOptions(memberSelectOptions(matches))
+            )
+          ],
+          flags: 64,
+        });
+      }
+
+      if (customId.startsWith("staff_timeout_modal:")) {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        const [, userId] = customId.split(":");
+        const targetMember = await ensureTargetMember(interaction.guild, userId);
+
+        if (!targetMember) {
+          return interaction.reply({ content: "Could not find that member.", flags: 64 });
+        }
+
+        const check = canActOnTarget(interaction.member, targetMember);
+        if (!check.ok) {
+          return interaction.reply({ content: check.reason, flags: 64 });
+        }
+
+        const minutesRaw = interaction.fields.getTextInputValue("timeout_minutes")?.trim();
+        const reasonRaw = interaction.fields.getTextInputValue("timeout_reason")?.trim();
+        const timeoutMs = timeoutMsFromMinutes(minutesRaw);
+
+        if (!timeoutMs) {
+          return interaction.reply({ content: "Enter a valid number of minutes.", flags: 64 });
+        }
+
+        const maxTimeoutMs = 28 * 24 * 60 * 60 * 1000;
+        if (timeoutMs > maxTimeoutMs) {
+          return interaction.reply({ content: "Timeout cannot exceed 28 days.", flags: 64 });
+        }
+
+        await targetMember.timeout(
+          timeoutMs,
+          reasonRaw || `Timed out by ${interaction.user.tag}`
+        );
+
+        return interaction.reply({
+          content: `✅ Timed out <@${targetMember.id}> for ${minutesRaw} minute(s).`,
+          flags: 64,
+        });
+      }
+
+      if (customId.startsWith("staff_ban_modal:")) {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        const [, userId] = customId.split(":");
+        const targetMember = await ensureTargetMember(interaction.guild, userId);
+
+        if (!targetMember) {
+          return interaction.reply({ content: "Could not find that member.", flags: 64 });
+        }
+
+        const check = canActOnTarget(interaction.member, targetMember);
+        if (!check.ok) {
+          return interaction.reply({ content: check.reason, flags: 64 });
+        }
+
+        const reasonRaw = interaction.fields.getTextInputValue("ban_reason")?.trim();
+
+        await targetMember.ban({
+          reason: reasonRaw || `Banned by ${interaction.user.tag}`,
+        });
+
+        return interaction.reply({
+          content: `✅ Banned <@${targetMember.id}>`,
+          flags: 64,
+        });
+      }
+
+      if (customId === "staff_unban_modal") {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        const userId = interaction.fields.getTextInputValue("unban_user_id")?.trim();
+        const reasonRaw = interaction.fields.getTextInputValue("unban_reason")?.trim();
+
+        if (!/^\d{16,20}$/.test(userId || "")) {
+          return interaction.reply({ content: "Enter a valid user ID.", flags: 64 });
+        }
+
+        const banRecord = await interaction.guild.bans.fetch(userId).catch(() => null);
+        if (!banRecord) {
+          return interaction.reply({ content: "That user is not currently banned.", flags: 64 });
+        }
+
+        await interaction.guild.members.unban(
+          userId,
+          reasonRaw || `Unbanned by ${interaction.user.tag}`
+        );
+
+        return interaction.reply({
+          content: `✅ Unbanned user ID \`${userId}\``,
           flags: 64,
         });
       }
