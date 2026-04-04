@@ -1378,33 +1378,9 @@ function verifyApproveComponents(userId) {
 }
 
 function staffPanelComponents() {
-  const embed = new EmbedBuilder()
-    .setTitle("Staff Control Panel")
-    .setDescription(
-      [
-        "Use the buttons below to manage the store.",
-        "",
-        "**Orders & stock**",
-        "• Adjust stock",
-        "• Lookup order",
-        "• Restock all",
-        "",
-        "**Discounts**",
-        "• Create discount code",
-        "• Toggle discount code",
-        "",
-        "**Catalog**",
-        "• Add category",
-        "• Rename category",
-        "• Delete category",
-        "• Add product",
-        "• Rename product",
-        "• Change price",
-        "• Change stock",
-        "• Move product",
-        "• Delete product",
-      ].join("\n")
-    );
+const embed = new EmbedBuilder()
+  .setTitle("Staff Control Panel")
+  .setColor(0x2b2d31);
 
   const row1 = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
