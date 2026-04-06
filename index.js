@@ -2776,7 +2776,7 @@ if (
 ) {
   await interaction.deferUpdate();
 
-  const [action, view, pageRaw] = customId.split(":").slice(1);
+  const [view, pageRaw] = customId.split(":").slice(1);
   const currentPage = parseInt(pageRaw, 10) || 0;
 
   let newPage = currentPage;
@@ -2810,12 +2810,12 @@ if (
   return;
 }
 
-      if (customId.startsWith("staff_member_apply_verify:")) {
-        await interaction.deferUpdate();
+if (customId.startsWith("staff_member_apply_verify:")) {
+  await interaction.deferUpdate();
 
-        const [, , , view, pageRaw, targetUserId] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
-        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+  const [, view, pageRaw, targetUserId] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
         if (!targetMember) {
           await interaction.message.edit({
@@ -2851,12 +2851,12 @@ if (
         return;
       }
 
-      if (customId.startsWith("staff_member_apply_unverify:")) {
-        await interaction.deferUpdate();
+if (customId.startsWith("staff_member_apply_unverify:")) {
+  await interaction.deferUpdate();
 
-        const [, , , view, pageRaw, targetUserId] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
-        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+  const [, view, pageRaw, targetUserId] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
         if (!targetMember) {
           await interaction.message.edit({
@@ -3420,13 +3420,13 @@ if (
 
       /* ----------------------- STAFF MEMBER BROWSER ----------------------- */
 
-      if (customId.startsWith("staff_member_browser_select:")) {
-        await interaction.deferUpdate();
+if (customId.startsWith("staff_member_browser_select:")) {
+  await interaction.deferUpdate();
 
-        const [, , view, pageRaw] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
-        const targetUserId = interaction.values[0];
-        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+  const [, view, pageRaw] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
+  const targetUserId = interaction.values[0];
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
         if (!targetMember) {
           await interaction.message.edit({
