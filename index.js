@@ -405,17 +405,17 @@ function buildMemberBrowserComponents(members, view, page = 0) {
   rows.push(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`staff_member_browser_page:${view}:${Math.max(0, safePage - 1)}`)
+        .setCustomId(`staff_member_browser_prev:${view}:${safePage}`)
         .setLabel("Previous")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(safePage <= 0),
       new ButtonBuilder()
-        .setCustomId(`staff_member_browser_page:${view}:${Math.min(totalPages - 1, safePage + 1)}`)
+        .setCustomId(`staff_member_browser_next:${view}:${safePage}`)
         .setLabel("Next")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(safePage >= totalPages - 1),
       new ButtonBuilder()
-        .setCustomId(`staff_member_browser_page:${view}:${safePage}`)
+        .setCustomId(`staff_member_browser_refresh:${view}:${safePage}`)
         .setLabel("Refresh")
         .setStyle(ButtonStyle.Primary)
     )
@@ -463,7 +463,7 @@ function buildMemberDetailComponents(member, view, page = 0) {
         .setStyle(ButtonStyle.Danger)
         .setDisabled(!verified),
       new ButtonBuilder()
-        .setCustomId(`staff_member_browser_page:${view}:${page}`)
+        .setCustomId(`staff_member_browser_refresh:${view}:${page}`)
         .setLabel("Back to List")
         .setStyle(ButtonStyle.Secondary)
     ),
@@ -2769,21 +2769,46 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-      if (customId.startsWith("staff_member_browser_page:")) {
-        await interaction.deferUpdate();
+if (
+  customId.startsWith("staff_member_browser_prev:") ||
+  customId.startsWith("staff_member_browser_next:") ||
+  customId.startsWith("staff_member_browser_refresh:")
+) {
+  await interaction.deferUpdate();
 
-        const [, , view, pageRaw] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
-        const members = await getFilteredGuildMembers(interaction.guild, view);
+  const [action, view, pageRaw] = customId.split(":").slice(1);
+  const currentPage = parseInt(pageRaw, 10) || 0;
 
-        await interaction.message.edit({
-          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-          embeds: [buildMemberBrowserEmbed(members, view, page)],
-          components: buildMemberBrowserComponents(members, view, page),
-        });
+  let newPage = currentPage;
 
-        return;
-      }
+  if (customId.startsWith("staff_member_browser_prev:")) {
+    newPage = Math.max(0, currentPage - 1);
+  }
+
+  if (customId.startsWith("staff_member_browser_next:")) {
+    const membersForCount = await getFilteredGuildMembers(interaction.guild, view);
+    const totalPages = Math.max(1, Math.ceil(membersForCount.length / MEMBER_BROWSER_PAGE_SIZE));
+    newPage = Math.min(totalPages - 1, currentPage + 1);
+
+    await interaction.message.edit({
+      content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+      embeds: [buildMemberBrowserEmbed(membersForCount, view, newPage)],
+      components: buildMemberBrowserComponents(membersForCount, view, newPage),
+    });
+
+    return;
+  }
+
+  const members = await getFilteredGuildMembers(interaction.guild, view);
+
+  await interaction.message.edit({
+    content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+    embeds: [buildMemberBrowserEmbed(members, view, newPage)],
+    components: buildMemberBrowserComponents(members, view, newPage),
+  });
+
+  return;
+}
 
       if (customId.startsWith("staff_member_apply_verify:")) {
         await interaction.deferUpdate();
