@@ -38,6 +38,9 @@ const VERIFICATION_LOG_CHANNEL_ID = process.env.VERIFICATION_LOG_CHANNEL_ID;
 const VERIFIED_ROLE_ID = process.env.VERIFIED_ROLE_ID;
 const STAFF_ONLY_CHANNEL_ID = process.env.STAFF_ONLY_CHANNEL_ID;
 
+const PRODUCT_REQUEST_CHANNEL_ID = process.env.PRODUCT_REQUEST_CHANNEL_ID;
+const PRODUCT_REQUEST_REVIEW_CHANNEL_ID = process.env.PRODUCT_REQUEST_REVIEW_CHANNEL_ID;
+
 const BANK_ACCOUNT_NAME = process.env.BANK_ACCOUNT_NAME || "YOUR COMPANY LTD";
 const BANK_SORT_CODE = process.env.BANK_SORT_CODE || "00-00-00";
 const BANK_ACCOUNT_NUMBER = process.env.BANK_ACCOUNT_NUMBER || "00000000";
@@ -56,6 +59,10 @@ const SHIPPING_UK_PENCE = Number(process.env.SHIPPING_UK_PENCE || 1000);
 const SHIPPING_EU_PENCE = Number(process.env.SHIPPING_EU_PENCE || 3500);
 const SHIPPING_USA_PENCE = Number(process.env.SHIPPING_USA_PENCE || 4500);
 
+const SUBMIT_LOCK_MS = 15000;
+const SHOP_SESSION_TIMEOUT_MS = 5 * 60 * 1000;
+const MEMBER_BROWSER_PAGE_SIZE = 10;
+
 function requireEnv(name, value) {
   if (!value) throw new Error(`Missing required env var: ${name}`);
 }
@@ -71,6 +78,8 @@ requireEnv("VERIFY_CHANNEL_ID", VERIFY_CHANNEL_ID);
 requireEnv("VERIFICATION_LOG_CHANNEL_ID", VERIFICATION_LOG_CHANNEL_ID);
 requireEnv("VERIFIED_ROLE_ID", VERIFIED_ROLE_ID);
 requireEnv("STAFF_ONLY_CHANNEL_ID", STAFF_ONLY_CHANNEL_ID);
+requireEnv("PRODUCT_REQUEST_CHANNEL_ID", PRODUCT_REQUEST_CHANNEL_ID);
+requireEnv("PRODUCT_REQUEST_REVIEW_CHANNEL_ID", PRODUCT_REQUEST_REVIEW_CHANNEL_ID);
 
 /* ------------------------------- DATABASE ------------------------------- */
 
@@ -99,12 +108,9 @@ const SAFE_SEED_CATALOG = {
 };
 
 const SUBMIT_LOCKS = new Map();
-const SUBMIT_LOCK_MS = 15000;
-
 const CART_UI_MESSAGES = new Map();
 const SHOP_SESSION_CHANNELS = new Map();
 const SHOP_SESSION_TIMEOUTS = new Map();
-const SHOP_SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 
 /* ------------------------------- HELPERS -------------------------------- */
 
@@ -114,10 +120,6 @@ function money(pence) {
 
 function isStaff(member) {
   return member?.roles?.cache?.has(STAFF_ROLE_ID);
-}
-
-function isStaffChannel(interaction) {
-  return interaction.channelId === STAFF_ONLY_CHANNEL_ID;
 }
 
 function safeChannelName(str) {
@@ -218,6 +220,10 @@ function shopItemDescription(item) {
   return truncate100(`${money(item.price_pence)} • Stock ${item.stock_qty}`);
 }
 
+function isVerifiedMember(member) {
+  return member?.roles?.cache?.has(VERIFIED_ROLE_ID);
+}
+
 /* ------------------------- MODERATION HELPERS -------------------------- */
 
 function memberSearchMatches(member, search) {
@@ -246,9 +252,9 @@ async function searchGuildMembers(guild, search, options = {}) {
     .filter((member) => {
       if (!member || member.user?.bot) return false;
 
-      const isVerified = member.roles.cache.has(VERIFIED_ROLE_ID);
-      if (verifiedOnly && !isVerified) return false;
-      if (excludeVerified && isVerified) return false;
+      const verified = isVerifiedMember(member);
+      if (verifiedOnly && !verified) return false;
+      if (excludeVerified && verified) return false;
 
       return memberSearchMatches(member, search);
     })
@@ -258,7 +264,9 @@ async function searchGuildMembers(guild, search, options = {}) {
 function memberSelectOptions(members) {
   return members.map((member) => ({
     label: truncate100(member.displayName || member.user.username),
-    description: truncate100(`@${member.user.username} • ${member.id}`),
+    description: truncate100(
+      `@${member.user.username} • ${isVerifiedMember(member) ? "Verified" : "Unverified"}`
+    ),
     value: member.id,
   }));
 }
@@ -302,6 +310,82 @@ function timeoutMsFromMinutes(minutes) {
   const mins = Number(minutes || 0);
   if (!Number.isFinite(mins) || mins <= 0) return null;
   return mins * 60 * 1000;
+}
+
+async function getFilteredGuildMembers(guild, view = "all") {
+  await guild.members.fetch();
+
+  let members = guild.members.cache.filter((member) => member && !member.user?.bot);
+
+  if (view === "verified") {
+    members = members.filter((member) => isVerifiedMember(member));
+  }
+
+  if (view === "unverified") {
+    members = members.filter((member) => !isVerifiedMember(member));
+  }
+
+  return Array.from(members.values()).sort((a, b) => {
+    const aName = String(a.displayName || a.user.username || "").toLowerCase();
+    const bName = String(b.displayName || b.user.username || "").toLowerCase();
+    return aName.localeCompare(bName);
+  });
+}
+
+function memberBrowserTitle(view) {
+  if (view === "verified") return "Verified Members";
+  if (view === "unverified") return "Unverified Members";
+  return "All Members";
+}
+
+function buildMemberBrowserEmbed(members, view, page = 0) {
+  const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = safePage * MEMBER_BROWSER_PAGE_SIZE;
+  const pageMembers = members.slice(start, start + MEMBER_BROWSER_PAGE_SIZE);
+
+  const lines = pageMembers.map((member, index) => {
+    const status = isVerifiedMember(member) ? "Verified" : "Unverified";
+    const position = start + index + 1;
+    return `${position}. **${member.displayName || member.user.username}** • <@${member.id}> • \`${member.id}\` • ${status}`;
+  });
+
+  return new EmbedBuilder()
+    .setTitle(memberBrowserTitle(view))
+    .setDescription(lines.join("\n") || "_No members found_")
+    .addFields(
+      { name: "Results", value: String(members.length), inline: true },
+      { name: "Page", value: `${safePage + 1}/${totalPages}`, inline: true }
+    );
+}
+
+function buildMemberBrowserComponents(view, page, totalPages) {
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`staff_member_browser:${view}:${Math.max(0, safePage - 1)}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage <= 0),
+      new ButtonBuilder()
+        .setCustomId(`staff_member_browser:${view}:${Math.min(totalPages - 1, safePage + 1)}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage >= totalPages - 1),
+      new ButtonBuilder()
+        .setCustomId(`staff_member_browser:${view}:${safePage}`)
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Primary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("staff_panel_home")
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
 }
 
 /* ------------------------------- INIT DB -------------------------------- */
@@ -437,6 +521,18 @@ async function initDb() {
       order_id BIGINT,
       used_at TIMESTAMPTZ DEFAULT NOW(),
       UNIQUE (code, user_id)
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS product_requests (
+      request_id BIGSERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      username TEXT,
+      requested_product TEXT NOT NULL,
+      extra_notes TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
 
@@ -913,6 +1009,21 @@ async function validateDiscountCodeForUser(userId, code) {
   };
 }
 
+/* ------------------------------- REQUESTS ------------------------------- */
+
+async function createProductRequestRecord(userId, username, requestedProduct, extraNotes) {
+  const res = await pool.query(
+    `
+    INSERT INTO product_requests (user_id, username, requested_product, extra_notes, status)
+    VALUES ($1, $2, $3, $4, 'pending')
+    RETURNING request_id, requested_product, extra_notes, created_at
+    `,
+    [userId, username, requestedProduct, extraNotes || null]
+  );
+
+  return res.rows[0];
+}
+
 /* ------------------------------- CART HELPERS ---------------------------- */
 
 async function getStockForSku(sku) {
@@ -1009,14 +1120,13 @@ async function categorySelectComponents() {
   ];
 }
 
-/* ✅ FIXED PRODUCT DROPDOWN */
 async function itemSelectComponents(categoryId) {
   const items = (await getProductsByCategoryId(categoryId)).slice(0, 25);
 
   const options = items.map((it) => ({
     label: truncate100(it.product_name),
     value: truncate100(it.sku),
-    description: truncate100(`£${(it.price_pence / 100).toFixed(2)}`), // ✅ price underneath
+    description: truncate100(`£${(it.price_pence / 100).toFixed(2)}`),
   }));
 
   return [
@@ -1097,6 +1207,17 @@ function verifyApproveComponents(userId) {
         .setCustomId(`verify_approve:${userId}`)
         .setLabel("Approve")
         .setStyle(ButtonStyle.Success)
+    ),
+  ];
+}
+
+function productRequestPanelComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("product_request_open")
+        .setLabel("Request a Product")
+        .setStyle(ButtonStyle.Primary)
     ),
   ];
 }
@@ -1196,6 +1317,7 @@ async function staffProductSelectByCategory(
     ),
   ];
 }
+
 /* ------------------------------ STAFF PANEL ------------------------------ */
 
 function navRow() {
@@ -1207,12 +1329,9 @@ function navRow() {
   );
 }
 
-/* MAIN PANEL */
-
 function staffMainPanel() {
   return {
     content: `**Staff Panel**\nSelect a section:`,
-
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("staff_nav_orders").setLabel("Orders").setStyle(ButtonStyle.Primary),
@@ -1227,8 +1346,6 @@ function staffMainPanel() {
     ],
   };
 }
-
-/* PRODUCTS */
 
 function staffProductsPanel() {
   return {
@@ -1245,8 +1362,6 @@ function staffProductsPanel() {
   };
 }
 
-/* CATEGORIES */
-
 function staffCategoriesPanel() {
   return {
     content: `🟢 **Categories**`,
@@ -1261,8 +1376,6 @@ function staffCategoriesPanel() {
   };
 }
 
-/* STOCK */
-
 function staffStockPanel() {
   return {
     content: `🟢 **Stock**`,
@@ -1275,8 +1388,6 @@ function staffStockPanel() {
     ],
   };
 }
-
-/* DISCOUNTS */
 
 function staffDiscountPanel() {
   return {
@@ -1291,8 +1402,6 @@ function staffDiscountPanel() {
   };
 }
 
-/* ORDERS */
-
 function staffOrdersPanel() {
   return {
     content: `🔵 **Orders**`,
@@ -1305,11 +1414,12 @@ function staffOrdersPanel() {
   };
 }
 
-/* MODERATION */
-
 function staffModerationPanel() {
   return {
-    content: `🔴 **Moderation**`,
+    content:
+      `🔴 **Moderation**\n\n` +
+      `Search based verification tools already exist here.\n` +
+      `This panel now also includes easier member browsing so staff can scroll through verified and unverified members.`,
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("staff_add_verified").setLabel("Verify").setStyle(ButtonStyle.Danger),
@@ -1319,6 +1429,11 @@ function staffModerationPanel() {
         new ButtonBuilder().setCustomId("staff_timeout").setLabel("Timeout").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("staff_kick").setLabel("Kick").setStyle(ButtonStyle.Danger),
         new ButtonBuilder().setCustomId("staff_ban").setLabel("Ban").setStyle(ButtonStyle.Danger)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_browse_all_members").setLabel("Browse All").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_browse_verified_members").setLabel("Browse Verified").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_browse_unverified_members").setLabel("Browse Unverified").setStyle(ButtonStyle.Secondary)
       ),
       navRow(),
     ],
@@ -1535,6 +1650,8 @@ function receiptEmbed(orderId, items, subtotal, discountAmount, discountCode, sh
       name: "Payment — Bank Transfer",
       value:
         `Please pay the **Total** via bank transfer using the details below.\n` +
+        `After payment, you must upload a **screenshot of payment** in this private order chat as evidence before your order can be shipped.\n` +
+        `Failure to provide payment proof may lead to delays.\n` +
         `Once paid, a staff member will confirm and mark the order as paid.\n\n` +
         bankDetailsText(orderId),
     },
@@ -1707,6 +1824,32 @@ function verifyModal() {
     new ActionRowBuilder().addComponents(referralInput),
     new ActionRowBuilder().addComponents(emailInput),
     new ActionRowBuilder().addComponents(phoneInput)
+  );
+
+  return modal;
+}
+
+function productRequestModal() {
+  const modal = new ModalBuilder()
+    .setCustomId("product_request_modal")
+    .setTitle("Request a Product");
+
+  const productInput = new TextInputBuilder()
+    .setCustomId("requested_product")
+    .setLabel("What product would you like to see?")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  const notesInput = new TextInputBuilder()
+    .setCustomId("extra_notes")
+    .setLabel("Extra details")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setPlaceholder("Optional: size, colour, brand, style, flavour, variation, etc.");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(productInput),
+    new ActionRowBuilder().addComponents(notesInput)
   );
 
   return modal;
@@ -1957,33 +2100,6 @@ function staffBanModal(userId, label) {
   return modal;
 }
 
-function staffUnbanModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_unban_modal")
-    .setTitle("Unban User");
-
-  const userIdInput = new TextInputBuilder()
-    .setCustomId("unban_user_id")
-    .setLabel("User ID")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Paste the user ID");
-
-  const reasonInput = new TextInputBuilder()
-    .setCustomId("unban_reason")
-    .setLabel("Reason")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setPlaceholder("Optional");
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(userIdInput),
-    new ActionRowBuilder().addComponents(reasonInput)
-  );
-
-  return modal;
-}
-
 /* -------------------------- SESSION / UI HELPERS ------------------------- */
 
 async function getTrackedCartUiMessage(userId, channel) {
@@ -2190,6 +2306,11 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
+    .setName("setupproductrequests")
+    .setDescription("Post/refresh the product request panel in the product request channel")
+    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+
+  new SlashCommandBuilder()
     .setName("ping")
     .setDescription("Health check"),
 ].map((c) => c.toJSON());
@@ -2232,6 +2353,9 @@ client.on("interactionCreate", async (interaction) => {
           `4) Add multiple items to your basket\n` +
           `5) Apply ${WELCOME_CODE} on your first order for ${WELCOME_DISCOUNT_PERCENT}% off\n` +
           `6) Submit your order when you're done\n\n` +
+          `**Important payment note:**\n` +
+          `A **screenshot of payment must be provided in your private order chat** as evidence before your order can be shipped.\n` +
+          `Failure to provide payment proof may lead to delays.\n\n` +
           `**Shipping:** UK Tracked ${money(SHIPPING_UK_PENCE)} • Europe ${money(SHIPPING_EU_PENCE)} • USA ${money(SHIPPING_USA_PENCE)}\n` +
           `**Cut-off:** 15:30 (Mon–Fri Dispatch)\n\n` +
           `If a shopping session is abandoned, the temporary shop channel auto closes after 5 minutes.`;
@@ -2273,6 +2397,34 @@ client.on("interactionCreate", async (interaction) => {
 
         return interaction.editReply(`✅ Staff panel posted in <#${STAFF_ONLY_CHANNEL_ID}>.`);
       }
+
+      if (interaction.commandName === "setupproductrequests") {
+        await interaction.deferReply({ flags: 64 });
+        deferred = true;
+
+        const requestChannel = await client.channels.fetch(PRODUCT_REQUEST_CHANNEL_ID).catch(() => null);
+        if (!requestChannel) {
+          return interaction.editReply("❌ Could not find the product request channel. Check PRODUCT_REQUEST_CHANNEL_ID.");
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle("Product Requests")
+          .setDescription(
+            [
+              "Got something you want added to the menu?",
+              "",
+              "Click the button below and submit your request.",
+              "Your request will be sent privately to staff for review.",
+            ].join("\n")
+          );
+
+        await requestChannel.send({
+          embeds: [embed],
+          components: productRequestPanelComponents(),
+        });
+
+        return interaction.editReply(`✅ Product request panel posted in <#${PRODUCT_REQUEST_CHANNEL_ID}>.`);
+      }
     }
 
     /* ------------------------------ BUTTONS ----------------------------- */
@@ -2300,6 +2452,10 @@ client.on("interactionCreate", async (interaction) => {
 
       if (customId === "verify_open_modal") {
         return interaction.showModal(verifyModal());
+      }
+
+      if (customId === "product_request_open") {
+        return interaction.showModal(productRequestModal());
       }
 
       if (customId.startsWith("verify_approve:")) {
@@ -2473,6 +2629,53 @@ client.on("interactionCreate", async (interaction) => {
 
       if (customId === "staff_ban") {
         return interaction.showModal(staffMemberSearchModal("ban", "Find Member To Ban"));
+      }
+
+      if (customId === "staff_browse_all_members") {
+        const members = await getFilteredGuildMembers(interaction.guild, "all");
+        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+
+        return interaction.update({
+          content: "Browsing all members:",
+          embeds: [buildMemberBrowserEmbed(members, "all", 0)],
+          components: buildMemberBrowserComponents("all", 0, totalPages),
+        });
+      }
+
+      if (customId === "staff_browse_verified_members") {
+        const members = await getFilteredGuildMembers(interaction.guild, "verified");
+        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+
+        return interaction.update({
+          content: "Browsing verified members:",
+          embeds: [buildMemberBrowserEmbed(members, "verified", 0)],
+          components: buildMemberBrowserComponents("verified", 0, totalPages),
+        });
+      }
+
+      if (customId === "staff_browse_unverified_members") {
+        const members = await getFilteredGuildMembers(interaction.guild, "unverified");
+        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+
+        return interaction.update({
+          content: "Browsing unverified members:",
+          embeds: [buildMemberBrowserEmbed(members, "unverified", 0)],
+          components: buildMemberBrowserComponents("unverified", 0, totalPages),
+        });
+      }
+
+      if (customId.startsWith("staff_member_browser:")) {
+        const [, view, pageRaw] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+
+        const members = await getFilteredGuildMembers(interaction.guild, view);
+        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+
+        return interaction.update({
+          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+          embeds: [buildMemberBrowserEmbed(members, view, page)],
+          components: buildMemberBrowserComponents(view, page, totalPages),
+        });
       }
 
       if (customId === "staff_restock_all_execute") {
@@ -2736,6 +2939,8 @@ client.on("interactionCreate", async (interaction) => {
             content:
               `<@${interaction.user.id}> **Thanks!** Your order has been received.\n\n` +
               `✅ Please pay by **bank transfer** using the details in the receipt below.\n` +
+              `✅ After payment, upload a **screenshot of payment** in this private order chat before your order can be shipped.\n` +
+              `⚠️ Failure to provide payment proof may lead to delays.\n\n` +
               `<@&${STAFF_ROLE_ID}> once confirmed, please mark as paid or dispatched when appropriate.`,
             embeds: [
               receiptEmbed(
@@ -3274,7 +3479,7 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    /* ------------------------------ MODAL SUBMITS ----------------------------- */
+      /* ------------------------------ MODAL SUBMITS ----------------------------- */
 
     if (interaction.isModalSubmit()) {
       const { customId } = interaction;
@@ -3382,6 +3587,55 @@ client.on("interactionCreate", async (interaction) => {
 
         return interaction.reply({
           content: "✅ Thanks. Your verification has been submitted and will be reviewed shortly.",
+          flags: 64,
+        });
+      }
+
+      if (customId === "product_request_modal") {
+        const requestedProduct = interaction.fields.getTextInputValue("requested_product")?.trim();
+        const extraNotes = interaction.fields.getTextInputValue("extra_notes")?.trim();
+
+        if (!requestedProduct) {
+          return interaction.reply({ content: "Please enter the product you want to request.", flags: 64 });
+        }
+
+        const created = await createProductRequestRecord(
+          interaction.user.id,
+          interaction.user.tag,
+          requestedProduct,
+          extraNotes
+        );
+
+        const reviewChannel = await interaction.guild.channels
+          .fetch(PRODUCT_REQUEST_REVIEW_CHANNEL_ID)
+          .catch(() => null);
+
+        if (!reviewChannel) {
+          return interaction.reply({
+            content: "Your request could not be forwarded because the review channel was not found. Check PRODUCT_REQUEST_REVIEW_CHANNEL_ID.",
+            flags: 64,
+          });
+        }
+
+        const embed = new EmbedBuilder()
+          .setTitle(`Product Request #${created.request_id}`)
+          .addFields(
+            { name: "Requested by", value: `<@${interaction.user.id}>`, inline: true },
+            { name: "Username", value: interaction.user.tag, inline: true },
+            { name: "User ID", value: interaction.user.id, inline: true },
+            { name: "Requested product", value: requestedProduct },
+            { name: "Extra notes", value: extraNotes || "_None provided_" },
+            { name: "Status", value: "pending", inline: true }
+          )
+          .setTimestamp(new Date(created.created_at));
+
+        await reviewChannel.send({
+          content: `<@&${STAFF_ROLE_ID}> New product request submitted for review.`,
+          embeds: [embed],
+        });
+
+        return interaction.reply({
+          content: "✅ Thanks. Your product request has been sent to staff for review.",
           flags: 64,
         });
       }
@@ -3760,6 +4014,61 @@ client.on("interactionCreate", async (interaction) => {
           components: cartActionsComponents(),
         });
         return;
+      }
+    }
+
+    /* ------------------------- EXTRA BUTTON HANDLERS ------------------------- */
+
+    if (interaction.isButton()) {
+      const { customId } = interaction;
+
+      if (customId.startsWith("staff_open_rename_product_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_price_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
+      }
+
+      if (customId.startsWith("staff_open_stock_modal_direct:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_move_product_flow:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `Choose the new category for **${product.product_name}** (${sku}):`,
+          components: await staffCategorySelect(
+            `staff_move_product_select_category:${sku}`,
+            "Choose a new category…"
+          ),
+        });
+      }
+
+      if (customId.startsWith("staff_delete_product_confirm:")) {
+        const [, sku] = customId.split(":");
+        const deleted = await deleteProduct(sku);
+        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
+          components: staffProductsPanel().components,
+        });
       }
     }
   } catch (err) {
