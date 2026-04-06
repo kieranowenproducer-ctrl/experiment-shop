@@ -226,20 +226,66 @@ function staffActionRow(...buttons) {
   return new ActionRowBuilder().addComponents(...buttons);
 }
 
-function staffBackRow(customId = "staff_panel_home", label = "Back to Staff Panel") {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(customId)
-        .setLabel(label)
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-}
-
 function shopItemDescription(item) {
   if (item.stock_qty <= 0) return truncate100(`${money(item.price_pence)} • Out of stock`);
   return truncate100(`${money(item.price_pence)} • Stock ${item.stock_qty}`);
+}
+
+function staffStandardEmbed(title, lines = []) {
+  return new EmbedBuilder()
+    .setTitle(title)
+    .setDescription(lines.join("\n"))
+    .setColor(0x2b2d31);
+}
+
+function staffHomeNavRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("staff_nav_orders")
+      .setLabel("Orders")
+      .setStyle(ButtonStyle.Primary),
+    new ButtonBuilder()
+      .setCustomId("staff_nav_catalog")
+      .setLabel("Catalog")
+      .setStyle(ButtonStyle.Success),
+    new ButtonBuilder()
+      .setCustomId("staff_nav_discounts")
+      .setLabel("Discounts")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("staff_nav_moderation")
+      .setLabel("Moderation")
+      .setStyle(ButtonStyle.Danger)
+  );
+}
+
+function staffBackHomeRow(backId, backLabel = "Back") {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(backId)
+      .setLabel(backLabel)
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId("staff_panel_home")
+      .setLabel("Home")
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function shopCategoryColor() {
+  return ButtonStyle.Success;
+}
+
+function orderCategoryColor() {
+  return ButtonStyle.Primary;
+}
+
+function discountCategoryColor() {
+  return ButtonStyle.Secondary;
+}
+
+function moderationCategoryColor() {
+  return ButtonStyle.Danger;
 }
 
 /* ------------------------- MODERATION HELPERS -------------------------- */
@@ -1498,129 +1544,234 @@ function verifyApproveComponents(userId) {
   ];
 }
 
-function staffPanelComponents() {
-  const embed = new EmbedBuilder()
-    .setTitle("Staff Control Panel")
-    .setDescription(
-      [
-        "**Shop Management**",
-        "Stock, orders, discounts, categories and products",
+function staffHomePanelComponents() {
+  return {
+    embeds: [
+      staffStandardEmbed("Staff Control Panel", [
+        "**Orders**",
+        "Look up customer orders and manage them quickly.",
+        "",
+        "**Catalog**",
+        "Products, categories and stock all in one place.",
+        "",
+        "**Discounts**",
+        "Create and toggle discount codes.",
         "",
         "**Moderation**",
-        "Verification, timeout, kick and ban tools",
+        "Verification, timeout, kick and ban tools.",
         "",
-        "Colours now follow one rule:",
-        "Blue = standard action",
-        "Grey = secondary or back",
-        "Green = positive action",
-        "Red = destructive action",
-      ].join("\n")
-    )
-    .setColor(0x2b2d31);
+        "This panel now stays in one message.",
+        "Use the buttons below to move between sections.",
+      ]),
+    ],
+    components: [staffHomeNavRow()],
+  };
+}
 
-  const row1 = staffActionRow(
-    new ButtonBuilder()
-      .setCustomId("staff_open_stock_flow")
-      .setLabel("Stock")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("staff_open_orderlookup_modal")
-      .setLabel("Orders")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("staff_open_create_discount_modal")
-      .setLabel("Create Discount")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("staff_open_toggle_discount_modal")
-      .setLabel("Toggle Discount")
-      .setStyle(ButtonStyle.Secondary)
-  );
+function staffOrdersPanelComponents() {
+  return {
+    embeds: [
+      staffStandardEmbed("Orders", [
+        "Order tools are grouped here.",
+        "",
+        "Use this section to look up existing orders.",
+      ]),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_open_orderlookup_modal")
+          .setLabel("Lookup Order")
+          .setStyle(orderCategoryColor())
+      ),
+      staffBackHomeRow("staff_panel_home", "Back"),
+    ],
+  };
+}
 
-  const row2 = staffActionRow(
-    new ButtonBuilder()
-      .setCustomId("staff_open_add_category_modal")
-      .setLabel("Add Category")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("staff_open_rename_category_flow")
-      .setLabel("Rename Category")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("staff_open_delete_category_flow")
-      .setLabel("Delete Category")
-      .setStyle(ButtonStyle.Danger)
-  );
+function staffCatalogPanelComponents() {
+  return {
+    embeds: [
+      staffStandardEmbed("Catalog", [
+        "Catalog tools are grouped into products, categories and stock.",
+        "",
+        "Choose a section below.",
+      ]),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_nav_products")
+          .setLabel("Products")
+          .setStyle(shopCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_nav_categories")
+          .setLabel("Categories")
+          .setStyle(shopCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_nav_stock")
+          .setLabel("Stock")
+          .setStyle(shopCategoryColor())
+      ),
+      staffBackHomeRow("staff_panel_home", "Back"),
+    ],
+  };
+}
 
-  const row3 = staffActionRow(
-    new ButtonBuilder()
-      .setCustomId("staff_open_add_product_flow")
-      .setLabel("Add Product")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("staff_open_edit_product_flow")
-      .setLabel("Edit Product")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("staff_restock_all_confirm")
-      .setLabel("Restock All")
-      .setStyle(ButtonStyle.Danger)
-  );
+function staffProductsPanelComponents() {
+  return {
+    embeds: [
+      staffStandardEmbed("Catalog • Products", [
+        "All product actions are grouped here.",
+        "",
+        "Green is used for this category.",
+      ]),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_open_add_product_flow")
+          .setLabel("Add Product")
+          .setStyle(shopCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_open_edit_product_flow")
+          .setLabel("Edit Product")
+          .setStyle(shopCategoryColor())
+      ),
+      staffBackHomeRow("staff_nav_catalog", "Back to Catalog"),
+    ],
+  };
+}
 
-  const row4 = staffActionRow(
-    new ButtonBuilder()
-      .setCustomId("staff_open_mod_panel")
-      .setLabel("Moderation Panel")
-      .setStyle(ButtonStyle.Primary)
-  );
+function staffCategoriesPanelComponents() {
+  return {
+    embeds: [
+      staffStandardEmbed("Catalog • Categories", [
+        "All category actions are grouped here.",
+        "",
+        "Green is used for this category and red is kept only for delete.",
+      ]),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_open_add_category_modal")
+          .setLabel("Add Category")
+          .setStyle(shopCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_open_rename_category_flow")
+          .setLabel("Rename Category")
+          .setStyle(shopCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_open_delete_category_flow")
+          .setLabel("Delete Category")
+          .setStyle(ButtonStyle.Danger)
+      ),
+      staffBackHomeRow("staff_nav_catalog", "Back to Catalog"),
+    ],
+  };
+}
 
-  return { embed, rows: [row1, row2, row3, row4] };
+function staffStockPanelComponents() {
+  return {
+    embeds: [
+      staffStandardEmbed("Catalog • Stock", [
+        "All stock actions are grouped here.",
+        "",
+        "Use Adjust Stock for one product or Restock All for a full reset.",
+      ]),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_open_stock_flow")
+          .setLabel("Adjust Stock")
+          .setStyle(shopCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_restock_all_confirm")
+          .setLabel("Restock All")
+          .setStyle(ButtonStyle.Danger)
+      ),
+      staffBackHomeRow("staff_nav_catalog", "Back to Catalog"),
+    ],
+  };
+}
+
+function staffDiscountsPanelComponents() {
+  return {
+    embeds: [
+      staffStandardEmbed("Discounts", [
+        "All discount actions are grouped here.",
+        "",
+        "Grey is used for this category.",
+      ]),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_open_create_discount_modal")
+          .setLabel("Create Discount")
+          .setStyle(discountCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_open_toggle_discount_modal")
+          .setLabel("Toggle Discount")
+          .setStyle(discountCategoryColor())
+      ),
+      staffBackHomeRow("staff_panel_home", "Back"),
+    ],
+  };
 }
 
 function moderationPanelComponents() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("staff_mod_add_verified")
-        .setLabel("Add Verified")
-        .setStyle(ButtonStyle.Success),
-      new ButtonBuilder()
-        .setCustomId("staff_mod_remove_verified")
-        .setLabel("Remove Verified")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId("staff_mod_timeout")
-        .setLabel("Timeout")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId("staff_mod_untimeout")
-        .setLabel("Remove Timeout")
-        .setStyle(ButtonStyle.Secondary)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("staff_mod_kick")
-        .setLabel("Kick")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId("staff_mod_ban")
-        .setLabel("Ban")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId("staff_mod_unban")
-        .setLabel("Unban")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("staff_panel_home")
-        .setLabel("Back to Main Panel")
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
+  return {
+    embeds: [
+      staffStandardEmbed("Moderation", [
+        "All moderation tools are grouped here.",
+        "",
+        "Red is used for this category.",
+      ]),
+    ],
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_mod_add_verified")
+          .setLabel("Add Verified")
+          .setStyle(moderationCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_mod_remove_verified")
+          .setLabel("Remove Verified")
+          .setStyle(moderationCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_mod_timeout")
+          .setLabel("Timeout")
+          .setStyle(moderationCategoryColor())
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_mod_untimeout")
+          .setLabel("Remove Timeout")
+          .setStyle(moderationCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_mod_kick")
+          .setLabel("Kick")
+          .setStyle(moderationCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_mod_ban")
+          .setLabel("Ban")
+          .setStyle(moderationCategoryColor()),
+        new ButtonBuilder()
+          .setCustomId("staff_mod_unban")
+          .setLabel("Unban")
+          .setStyle(moderationCategoryColor())
+      ),
+      staffBackHomeRow("staff_panel_home", "Back"),
+    ],
+  };
 }
 
 /* ------------------------------- STAFF UI -------------------------------- */
 
-async function staffCategorySelect(customId, placeholder = "Choose a category…", includeBack = true) {
+async function staffCategorySelect(customId, placeholder = "Choose a category…", backId = "staff_panel_home", backLabel = "Back") {
   const categories = await getCategories();
 
   if (!categories.length) {
@@ -1632,7 +1783,7 @@ async function staffCategorySelect(customId, placeholder = "Choose a category…
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true)
       ),
-      ...(includeBack ? staffBackRow() : []),
+      staffBackHomeRow(backId, backLabel),
     ];
   }
 
@@ -1648,11 +1799,11 @@ async function staffCategorySelect(customId, placeholder = "Choose a category…
           }))
         )
     ),
-    ...(includeBack ? staffBackRow() : []),
+    staffBackHomeRow(backId, backLabel),
   ];
 }
 
-async function staffProductSelectByCategory(customId, categoryId, placeholder = "Choose a product…", includeBack = true) {
+async function staffProductSelectByCategory(customId, categoryId, placeholder = "Choose a product…", backId = "staff_panel_home", backLabel = "Back") {
   const products = await getProductsByCategoryId(categoryId);
 
   if (!products.length) {
@@ -1664,7 +1815,7 @@ async function staffProductSelectByCategory(customId, categoryId, placeholder = 
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true)
       ),
-      ...(includeBack ? staffBackRow() : []),
+      staffBackHomeRow(backId, backLabel),
     ];
   }
 
@@ -1681,7 +1832,7 @@ async function staffProductSelectByCategory(customId, categoryId, placeholder = 
           }))
         )
     ),
-    ...(includeBack ? staffBackRow() : []),
+    staffBackHomeRow(backId, backLabel),
   ];
 }
 
@@ -1691,2352 +1842,957 @@ function staffEditProductActionComponents(categoryId, sku) {
       new ButtonBuilder()
         .setCustomId(`staff_open_rename_product_modal:${sku}`)
         .setLabel("Rename")
-        .setStyle(ButtonStyle.Primary),
+        .setStyle(shopCategoryColor()),
       new ButtonBuilder()
         .setCustomId(`staff_open_price_modal:${sku}`)
         .setLabel("Change Price")
-        .setStyle(ButtonStyle.Primary),
+        .setStyle(shopCategoryColor()),
       new ButtonBuilder()
         .setCustomId(`staff_open_stock_modal_direct:${sku}`)
         .setLabel("Change Stock")
-        .setStyle(ButtonStyle.Primary)
+        .setStyle(shopCategoryColor())
     ),
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`staff_open_move_product_flow:${sku}`)
         .setLabel("Move Product")
-        .setStyle(ButtonStyle.Secondary),
+        .setStyle(shopCategoryColor()),
       new ButtonBuilder()
         .setCustomId(`staff_delete_product_confirm:${sku}`)
         .setLabel("Delete Product")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId(`staff_back_edit_products:${categoryId}`)
-        .setLabel("Back")
-        .setStyle(ButtonStyle.Secondary)
+        .setStyle(ButtonStyle.Danger)
     ),
+    staffBackHomeRow(`staff_back_edit_products:${categoryId}`, "Back to Products"),
   ];
 }
 
-/* -------------------------------- MODALS -------------------------------- */
+/* --------------------------- STAFF PANEL UI --------------------------- */
 
-function shippingModal() {
-  const modal = new ModalBuilder().setCustomId("shipping_modal").setTitle("Shipping details");
+function staffMainPanel() {
+  return {
+    content:
+      `**Staff Control Panel**\n\n` +
+      `Select a section:`,
 
-  const fullName = new TextInputBuilder()
-    .setCustomId("full_name")
-    .setLabel("Full name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_nav_orders").setLabel("Orders").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_nav_products").setLabel("Products").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_nav_categories").setLabel("Categories").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_nav_stock").setLabel("Stock").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_nav_discounts").setLabel("Discounts").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_nav_moderation").setLabel("Moderation").setStyle(ButtonStyle.Danger)
+      ),
+    ],
+  };
+}
 
-  const email = new TextInputBuilder()
-    .setCustomId("email")
-    .setLabel("Email")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+/* --------------------------- SUB PANELS --------------------------- */
 
-  const phone = new TextInputBuilder()
-    .setCustomId("phone")
-    .setLabel("Phone number")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+function staffProductsPanel() {
+  return {
+    content: `**Products Panel**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_add_product").setLabel("Add Product").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_edit_product").setLabel("Edit Product").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_move_product").setLabel("Move Product").setStyle(ButtonStyle.Success)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_delete_product").setLabel("Delete Product").setStyle(ButtonStyle.Danger)
+      ),
+      navRow("staff_panel_home")
+    ],
+  };
+}
 
-  const fullAddress = new TextInputBuilder()
-    .setCustomId("full_address")
-    .setLabel("Provide Full Address")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true);
+function staffCategoriesPanel() {
+  return {
+    content: `**Categories Panel**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_add_category").setLabel("Add Category").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_rename_category").setLabel("Rename Category").setStyle(ButtonStyle.Primary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_delete_category").setLabel("Delete Category").setStyle(ButtonStyle.Danger)
+      ),
+      navRow("staff_panel_home")
+    ],
+  };
+}
 
-  const country = new TextInputBuilder()
-    .setCustomId("country")
-    .setLabel("Country")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+function staffStockPanel() {
+  return {
+    content: `**Stock Panel**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_adjust_stock").setLabel("Adjust Stock").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_restock_all").setLabel("Restock All").setStyle(ButtonStyle.Success)
+      ),
+      navRow("staff_panel_home")
+    ],
+  };
+}
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(fullName),
-    new ActionRowBuilder().addComponents(email),
-    new ActionRowBuilder().addComponents(phone),
-    new ActionRowBuilder().addComponents(fullAddress),
-    new ActionRowBuilder().addComponents(country)
+function staffDiscountPanel() {
+  return {
+    content: `**Discount Panel**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_create_discount").setLabel("Create Discount").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_toggle_discount").setLabel("Toggle Discount").setStyle(ButtonStyle.Primary)
+      ),
+      navRow("staff_panel_home")
+    ],
+  };
+}
+
+function staffOrdersPanel() {
+  return {
+    content: `**Orders Panel**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_lookup_order").setLabel("Lookup Order").setStyle(ButtonStyle.Secondary)
+      ),
+      navRow("staff_panel_home")
+    ],
+  };
+}
+
+function staffModerationPanel() {
+  return {
+    content: `**Moderation Panel**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_add_verified").setLabel("Add Verified").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("staff_remove_verified").setLabel("Remove Verified").setStyle(ButtonStyle.Danger)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_timeout").setLabel("Timeout").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("staff_untimeout").setLabel("Remove Timeout").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_kick").setLabel("Kick").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("staff_ban").setLabel("Ban").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("staff_unban").setLabel("Unban").setStyle(ButtonStyle.Secondary)
+      ),
+      navRow("staff_panel_home")
+    ],
+  };
+}
+
+/* --------------------------- NAVIGATION ROW --------------------------- */
+
+function navRow(homeId) {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId(homeId)
+      .setLabel("Back to Main Panel")
+      .setStyle(ButtonStyle.Secondary)
   );
-
-  return modal;
 }
 
-function qtyOtherModal(categoryId, sku) {
-  const modal = new ModalBuilder().setCustomId(`qty_other_modal:${categoryId}:${sku}`).setTitle("Quantity");
+/* --------------------------- BUTTON HANDLER --------------------------- */
 
-  const qty = new TextInputBuilder()
-    .setCustomId("qty")
-    .setLabel("Enter quantity (number)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+if (interaction.isButton()) {
+  const { customId } = interaction;
 
-  modal.addComponents(new ActionRowBuilder().addComponents(qty));
-  return modal;
-}
+  /* -------- MAIN NAV -------- */
 
-function discountCodeModal() {
-  const modal = new ModalBuilder().setCustomId("discount_code_modal").setTitle("Apply discount code");
-
-  const code = new TextInputBuilder()
-    .setCustomId("discount_code")
-    .setLabel("Enter discount code")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(code));
-  return modal;
-}
-
-function verifyModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("verify_submit_modal")
-    .setTitle("Verification Form");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("verify_name")
-    .setLabel("Full name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const foundInput = new TextInputBuilder()
-    .setCustomId("verify_found")
-    .setLabel("How did you hear about us?")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true);
-
-  const referralInput = new TextInputBuilder()
-    .setCustomId("verify_referral")
-    .setLabel("Referral / who sent you")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const emailInput = new TextInputBuilder()
-    .setCustomId("verify_email")
-    .setLabel("Email address")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const phoneInput = new TextInputBuilder()
-    .setCustomId("verify_phone")
-    .setLabel("Phone number")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(nameInput),
-    new ActionRowBuilder().addComponents(foundInput),
-    new ActionRowBuilder().addComponents(referralInput),
-    new ActionRowBuilder().addComponents(emailInput),
-    new ActionRowBuilder().addComponents(phoneInput)
-  );
-
-  return modal;
-}
-
-function staffOrderLookupModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_orderlookup_modal")
-    .setTitle("Lookup Order");
-
-  const orderIdInput = new TextInputBuilder()
-    .setCustomId("lookup_order_id")
-    .setLabel("Order ID")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(orderIdInput));
-  return modal;
-}
-
-function staffCreateDiscountModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_create_discount_modal")
-    .setTitle("Create Discount Code");
-
-  const codeInput = new TextInputBuilder()
-    .setCustomId("discount_code")
-    .setLabel("Discount code")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const percentInput = new TextInputBuilder()
-    .setCustomId("discount_percent")
-    .setLabel("Discount percent")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(codeInput),
-    new ActionRowBuilder().addComponents(percentInput)
-  );
-
-  return modal;
-}
-
-function staffToggleDiscountModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_toggle_discount_modal")
-    .setTitle("Toggle Discount Code");
-
-  const codeInput = new TextInputBuilder()
-    .setCustomId("discount_code")
-    .setLabel("Discount code")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const activeInput = new TextInputBuilder()
-    .setCustomId("discount_active")
-    .setLabel("Type active or inactive")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(codeInput),
-    new ActionRowBuilder().addComponents(activeInput)
-  );
-
-  return modal;
-}
-
-function staffStockQtyModal(sku, label) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_stock_qty_modal:${sku}`)
-    .setTitle("Update Stock");
-
-  const qtyInput = new TextInputBuilder()
-    .setCustomId("stock_qty")
-    .setLabel(truncate100(`New stock for ${label || sku}`))
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 25");
-
-  modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
-  return modal;
-}
-
-function staffAddCategoryModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_add_category_modal")
-    .setTitle("Add Category");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("category_name")
-    .setLabel("Category name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
-  return modal;
-}
-
-function staffRenameCategoryModal(categoryId, currentName) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_rename_category_modal:${categoryId}`)
-    .setTitle("Rename Category");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("new_category_name")
-    .setLabel("New category name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue(String(currentName || "").slice(0, 4000));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
-  return modal;
-}
-
-function staffAddProductModal(categoryId, categoryName) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_add_product_modal:${categoryId}`)
-    .setTitle("Add Product");
-
-  const skuInput = new TextInputBuilder()
-    .setCustomId("sku")
-    .setLabel("SKU")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: NEW001");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("product_name")
-    .setLabel(`Product name for ${truncate100(categoryName)}`)
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const priceInput = new TextInputBuilder()
-    .setCustomId("price_gbp")
-    .setLabel("Price in GBP")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 19.99");
-
-  const stockInput = new TextInputBuilder()
-    .setCustomId("stock_qty")
-    .setLabel("Starting stock")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 10");
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(skuInput),
-    new ActionRowBuilder().addComponents(nameInput),
-    new ActionRowBuilder().addComponents(priceInput),
-    new ActionRowBuilder().addComponents(stockInput)
-  );
-
-  return modal;
-}
-
-function staffRenameProductModal(sku, currentName) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_rename_product_modal:${sku}`)
-    .setTitle("Rename Product");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("new_product_name")
-    .setLabel("New product name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue(String(currentName || "").slice(0, 4000));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
-  return modal;
-}
-
-function staffEditPriceModal(sku, currentPricePence) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_edit_price_modal:${sku}`)
-    .setTitle("Change Price");
-
-  const priceInput = new TextInputBuilder()
-    .setCustomId("price_gbp")
-    .setLabel("New price in GBP")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue((Number(currentPricePence || 0) / 100).toFixed(2));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(priceInput));
-  return modal;
-}
-
-function staffMemberSearchModal(action, title = "Find Member") {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_member_search_modal:${action}`)
-    .setTitle(title);
-
-  const searchInput = new TextInputBuilder()
-    .setCustomId("member_search")
-    .setLabel("Username, display name, or user ID")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: james");
-
-  modal.addComponents(new ActionRowBuilder().addComponents(searchInput));
-
-  return modal;
-}
-
-function staffTimeoutModal(userId, label) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_timeout_modal:${userId}`)
-    .setTitle("Timeout Member");
-
-  const minutesInput = new TextInputBuilder()
-    .setCustomId("timeout_minutes")
-    .setLabel("Timeout length in minutes")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 60");
-
-  const reasonInput = new TextInputBuilder()
-    .setCustomId("timeout_reason")
-    .setLabel(`Reason for ${truncate100(label || userId)}`)
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setPlaceholder("Optional");
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(minutesInput),
-    new ActionRowBuilder().addComponents(reasonInput)
-  );
-
-  return modal;
-}
-
-function staffBanModal(userId, label) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_ban_modal:${userId}`)
-    .setTitle("Ban Member");
-
-  const reasonInput = new TextInputBuilder()
-    .setCustomId("ban_reason")
-    .setLabel(`Reason for ${truncate100(label || userId)}`)
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setPlaceholder("Optional");
-
-  modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
-
-  return modal;
-}
-
-function staffUnbanModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_unban_modal")
-    .setTitle("Unban User");
-
-  const userIdInput = new TextInputBuilder()
-    .setCustomId("unban_user_id")
-    .setLabel("User ID")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Paste the user ID");
-
-  const reasonInput = new TextInputBuilder()
-    .setCustomId("unban_reason")
-    .setLabel("Reason")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setPlaceholder("Optional");
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(userIdInput),
-    new ActionRowBuilder().addComponents(reasonInput)
-  );
-
-  return modal;
-}
-
-/* -------------------------- SESSION / UI HELPERS ------------------------- */
-
-async function getTrackedCartUiMessage(userId, channel) {
-  const tracked = CART_UI_MESSAGES.get(userId);
-  if (!tracked) return null;
-  if (tracked.channelId !== channel.id) return null;
-
-  const msg = await channel.messages.fetch(tracked.messageId).catch(() => null);
-  if (!msg) {
-    CART_UI_MESSAGES.delete(userId);
-    return null;
+  if (customId === "staff_panel_home") {
+    return interaction.update(staffMainPanel());
   }
 
-  return msg;
-}
-
-function trackCartUiMessage(userId, channelId, messageId) {
-  CART_UI_MESSAGES.set(userId, { channelId, messageId });
-}
-
-function clearTrackedCartUiMessage(userId) {
-  CART_UI_MESSAGES.delete(userId);
-}
-
-async function getTrackedShopSessionChannel(guild, userId) {
-  const trackedChannelId = SHOP_SESSION_CHANNELS.get(userId);
-  if (!trackedChannelId) return null;
-
-  const channel = await guild.channels.fetch(trackedChannelId).catch(() => null);
-  if (!channel) {
-    SHOP_SESSION_CHANNELS.delete(userId);
-    return null;
+  if (customId === "staff_nav_products") {
+    return interaction.update(staffProductsPanel());
   }
 
-  return channel;
-}
-
-function trackShopSessionChannel(userId, channelId) {
-  SHOP_SESSION_CHANNELS.set(userId, channelId);
-}
-
-function clearTrackedShopSessionChannel(userId) {
-  SHOP_SESSION_CHANNELS.delete(userId);
-}
-
-function clearShopSessionTimeout(userId) {
-  const timeout = SHOP_SESSION_TIMEOUTS.get(userId);
-  if (timeout) {
-    clearTimeout(timeout);
-    SHOP_SESSION_TIMEOUTS.delete(userId);
-  }
-}
-
-async function destroyShopSessionByChannel(channel, userId, reason = "Shop session closed") {
-  clearShopSessionTimeout(userId);
-  clearTrackedCartUiMessage(userId);
-  clearTrackedShopSessionChannel(userId);
-
-  await clearCart(userId).catch(() => {});
-  await clearCartDiscount(userId).catch(() => {});
-
-  if (channel) {
-    try {
-      await channel.delete(reason);
-    } catch (err) {
-      console.error("Failed to delete shop session channel:", err);
-    }
-  }
-}
-
-async function destroyShopSession(guild, userId, reason = "Shop session closed") {
-  clearShopSessionTimeout(userId);
-
-  const channel = await getTrackedShopSessionChannel(guild, userId).catch(() => null);
-  await destroyShopSessionByChannel(channel, userId, reason);
-}
-
-function resetShopSessionTimeout(guild, userId) {
-  clearShopSessionTimeout(userId);
-
-  const timeout = setTimeout(async () => {
-    await destroyShopSession(guild, userId, "Shop session expired after inactivity");
-  }, SHOP_SESSION_TIMEOUT_MS);
-
-  SHOP_SESSION_TIMEOUTS.set(userId, timeout);
-}
-
-async function createOrGetShopSessionChannel(guild, user) {
-  const existingTracked = await getTrackedShopSessionChannel(guild, user.id);
-  if (existingTracked) {
-    resetShopSessionTimeout(guild, user.id);
-    return existingTracked;
+  if (customId === "staff_nav_categories") {
+    return interaction.update(staffCategoriesPanel());
   }
 
-  const topicMarker = `shop-session:${user.id}`;
-  const cachedExisting = guild.channels.cache.find(
-    (ch) => ch && ch.type === ChannelType.GuildText && ch.topic === topicMarker
-  );
-
-  if (cachedExisting) {
-    trackShopSessionChannel(user.id, cachedExisting.id);
-    resetShopSessionTimeout(guild, user.id);
-    return cachedExisting;
+  if (customId === "staff_nav_stock") {
+    return interaction.update(staffStockPanel());
   }
 
-  const menuChannel = await guild.channels.fetch(MENU_CHANNEL_ID).catch(() => null);
-  const parentId = menuChannel?.parentId || null;
+  if (customId === "staff_nav_discounts") {
+    return interaction.update(staffDiscountPanel());
+  }
 
-  const channel = await guild.channels.create({
-    name: safeChannelName(`shop-${user.username}`),
-    type: ChannelType.GuildText,
-    parent: parentId,
-    topic: topicMarker,
-    permissionOverwrites: [
-      { id: guild.roles.everyone.id, deny: ["ViewChannel"] },
-      { id: user.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
-      { id: STAFF_ROLE_ID, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
-      { id: guild.members.me.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory", "ManageChannels"] },
+  if (customId === "staff_nav_orders") {
+    return interaction.update(staffOrdersPanel());
+  }
+
+  if (customId === "staff_nav_moderation") {
+    return interaction.update(staffModerationPanel());
+  }
+
+  /* -------- EXISTING ACTION HOOKS -------- */
+  // KEEP your existing logic below
+}
+
+/* --------------------------- SETUP STAFF PANEL --------------------------- */
+
+if (interaction.commandName === "setupstaffpanel") {
+  await interaction.deferReply({ flags: 64 });
+  deferred = true;
+
+  const staffChannel = await client.channels.fetch(STAFF_ONLY_CHANNEL_ID).catch(() => null);
+  if (!staffChannel) {
+    return interaction.editReply("❌ Could not find the staff-only channel. Check STAFF_ONLY_CHANNEL_ID.");
+  }
+
+  await staffChannel.send(staffMainPanel());
+
+  return interaction.editReply(`✅ Staff panel posted in <#${STAFF_ONLY_CHANNEL_ID}>.`);
+}
+
+/* --------------------------- STAFF BUTTON ACTIONS --------------------------- */
+/* put these inside your interaction.isButton() block, BELOW the nav buttons from part 2 */
+
+if (customId === "staff_add_product") {
+  return interaction.update({
+    content: "Choose the category you want to add a product to:",
+    components: await staffCategorySelect(
+      "staff_add_product_select_category",
+      "Choose a category…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId === "staff_edit_product") {
+  return interaction.update({
+    content: "Choose the category containing the product you want to edit:",
+    components: await staffCategorySelect(
+      "staff_edit_product_select_category",
+      "Choose a category…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId === "staff_move_product") {
+  return interaction.update({
+    content: "Choose the category containing the product you want to move:",
+    components: await staffCategorySelect(
+      "staff_move_product_pick_category",
+      "Choose a category…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId === "staff_delete_product") {
+  return interaction.update({
+    content: "Choose the category containing the product you want to delete:",
+    components: await staffCategorySelect(
+      "staff_delete_product_pick_category",
+      "Choose a category…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId === "staff_add_category") {
+  return interaction.showModal(staffAddCategoryModal());
+}
+
+if (customId === "staff_rename_category") {
+  return interaction.update({
+    content: "Choose the category you want to rename:",
+    components: await staffCategorySelect(
+      "staff_rename_category_select",
+      "Choose a category…",
+      "staff_nav_categories",
+      "Back to Categories"
+    ),
+  });
+}
+
+if (customId === "staff_delete_category") {
+  return interaction.update({
+    content: "Choose the category you want to delete:",
+    components: await staffCategorySelect(
+      "staff_delete_category_select",
+      "Choose a category…",
+      "staff_nav_categories",
+      "Back to Categories"
+    ),
+  });
+}
+
+if (customId === "staff_adjust_stock") {
+  return interaction.update({
+    content: "Choose a category:",
+    components: await staffCategorySelect(
+      "staff_stock_select_category",
+      "Choose a category…",
+      "staff_nav_stock",
+      "Back to Stock"
+    ),
+  });
+}
+
+if (customId === "staff_restock_all") {
+  return interaction.update({
+    content: "Are you sure you want to restock all items back to their default values?",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_restock_all_execute")
+          .setLabel("Yes, restock all")
+          .setStyle(ButtonStyle.Danger)
+      ),
+      navRow("staff_nav_stock"),
     ],
   });
-
-  trackShopSessionChannel(user.id, channel.id);
-  resetShopSessionTimeout(guild, user.id);
-  return channel;
 }
 
-async function sendOrEditCartUiMessage(interaction, payload, options = {}) {
-  const { keepReply = false } = options;
-
-  await interaction.deferReply({ flags: 64 });
-
-  const targetChannel = await createOrGetShopSessionChannel(interaction.guild, interaction.user);
-  const existing = await getTrackedCartUiMessage(interaction.user.id, targetChannel);
-
-  let msg;
-  if (existing) {
-    await existing.edit(payload);
-    msg = existing;
-  } else {
-    msg = await targetChannel.send(payload);
-    trackCartUiMessage(interaction.user.id, targetChannel.id, msg.id);
-  }
-
-  resetShopSessionTimeout(interaction.guild, interaction.user.id);
-
-  if (keepReply) {
-    return { message: msg, channel: targetChannel };
-  }
-
-  await interaction.deleteReply().catch(() => {});
-  return { message: msg, channel: targetChannel };
+if (customId === "staff_create_discount") {
+  return interaction.showModal(staffCreateDiscountModal());
 }
 
-async function showCategoriesInSession(interaction, content = "Choose a category:") {
-  trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-  resetShopSessionTimeout(interaction.guild, interaction.user.id);
+if (customId === "staff_toggle_discount") {
+  return interaction.showModal(staffToggleDiscountModal());
+}
+
+if (customId === "staff_lookup_order") {
+  return interaction.showModal(staffOrderLookupModal());
+}
+
+if (customId === "staff_add_verified") {
+  return interaction.showModal(
+    staffMemberSearchModal("add_verified", "Add Verified Role")
+  );
+}
+
+if (customId === "staff_remove_verified") {
+  return interaction.showModal(
+    staffMemberSearchModal("remove_verified", "Remove Verified Role")
+  );
+}
+
+if (customId === "staff_timeout") {
+  return interaction.showModal(
+    staffMemberSearchModal("timeout", "Find Member To Timeout")
+  );
+}
+
+if (customId === "staff_untimeout") {
+  return interaction.showModal(
+    staffMemberSearchModal("untimeout", "Find Member To Remove Timeout")
+  );
+}
+
+if (customId === "staff_kick") {
+  return interaction.showModal(
+    staffMemberSearchModal("kick", "Find Member To Kick")
+  );
+}
+
+if (customId === "staff_ban") {
+  return interaction.showModal(
+    staffMemberSearchModal("ban", "Find Member To Ban")
+  );
+}
+
+if (customId === "staff_unban") {
+  return interaction.showModal(staffUnbanModal());
+}
+
+if (customId === "staff_restock_all_execute") {
+  await restockAllToDefault();
 
   return interaction.update({
-    content,
-    components: await categorySelectComponents(),
+    content: "✅ All stock reset to default values.",
+    components: staffStockPanel().components,
   });
 }
 
-async function showCartInSession(interaction, heading = "🛒 **Your basket**") {
-  trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-  resetShopSessionTimeout(interaction.guild, interaction.user.id);
+/* --------------------------- STAFF SELECT MENUS --------------------------- */
+/* put these inside your interaction.isStringSelectMenu() block */
 
-  const cart = await getCartSummary(interaction.user.id);
+if (customId === "staff_stock_select_category") {
+  const categoryId = interaction.values[0];
 
-  if (!cart.items.length) {
+  return interaction.update({
+    content: "Choose the product you want to update stock for:",
+    components: await staffProductSelectByCategory(
+      "staff_stock_select_product",
+      categoryId,
+      "Choose a product…",
+      "staff_nav_stock",
+      "Back to Stock"
+    ),
+  });
+}
+
+if (customId === "staff_stock_select_product") {
+  const sku = interaction.values[0];
+  const product = await getProductBySku(sku);
+  if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.showModal(staffStockQtyModal(sku, product.product_name));
+}
+
+if (customId === "staff_add_product_select_category") {
+  const categoryId = interaction.values[0];
+  const category = await getCategoryById(categoryId);
+  if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
+
+  return interaction.showModal(staffAddProductModal(categoryId, category.category_name));
+}
+
+if (customId === "staff_edit_product_select_category") {
+  const categoryId = interaction.values[0];
+
+  return interaction.update({
+    content: "Choose a product:",
+    components: await staffProductSelectByCategory(
+      "staff_edit_product_select_product",
+      categoryId,
+      "Choose a product…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId === "staff_edit_product_select_product") {
+  const sku = interaction.values[0];
+  const product = await getProductBySku(sku);
+  if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.update({
+    content:
+      `**${product.product_name}**\n` +
+      `SKU: ${product.sku}\n` +
+      `Category: ${product.category_name}\n` +
+      `Price: ${money(product.price_pence)}\n` +
+      `Stock: ${product.stock_qty}`,
+    components: staffEditProductActionComponents(product.category_id, sku),
+  });
+}
+
+if (customId === "staff_move_product_pick_category") {
+  const categoryId = interaction.values[0];
+
+  return interaction.update({
+    content: "Choose the product you want to move:",
+    components: await staffProductSelectByCategory(
+      "staff_move_product_select_product",
+      categoryId,
+      "Choose a product…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId === "staff_move_product_select_product") {
+  const sku = interaction.values[0];
+  const product = await getProductBySku(sku);
+  if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.update({
+    content: `Choose the new category for **${product.product_name}** (${sku}):`,
+    components: await staffCategorySelect(
+      `staff_move_product_select_category:${sku}`,
+      "Choose a new category…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId.startsWith("staff_move_product_select_category:")) {
+  const [, sku] = customId.split(":");
+  const categoryId = interaction.values[0];
+  const category = await getCategoryById(categoryId);
+  const moved = await moveProductToCategory(sku, categoryId);
+
+  if (!moved) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.update({
+    content: `✅ Product moved to **${category?.category_name || "new category"}**`,
+    components: staffProductsPanel().components,
+  });
+}
+
+if (customId === "staff_delete_product_pick_category") {
+  const categoryId = interaction.values[0];
+
+  return interaction.update({
+    content: "Choose the product you want to delete:",
+    components: await staffProductSelectByCategory(
+      "staff_delete_product_select_product",
+      categoryId,
+      "Choose a product…",
+      "staff_nav_products",
+      "Back to Products"
+    ),
+  });
+}
+
+if (customId === "staff_delete_product_select_product") {
+  const sku = interaction.values[0];
+  const deleted = await deleteProduct(sku);
+  if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.update({
+    content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
+    components: staffProductsPanel().components,
+  });
+}
+
+if (customId === "staff_rename_category_select") {
+  const categoryId = interaction.values[0];
+  const category = await getCategoryById(categoryId);
+  if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
+
+  return interaction.showModal(staffRenameCategoryModal(categoryId, category.category_name));
+}
+
+if (customId === "staff_delete_category_select") {
+  const categoryId = interaction.values[0];
+  const category = await getCategoryById(categoryId);
+  if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
+
+  const deleted = await deleteCategory(categoryId);
+  if (!deleted) return interaction.reply({ content: "Category not found.", flags: 64 });
+
+  return interaction.update({
+    content: `✅ Deleted category **${deleted.category_name}**`,
+    components: staffCategoriesPanel().components,
+  });
+}
+
+if (customId.startsWith("staff_member_search_select:")) {
+  const [, action] = customId.split(":");
+  const targetUserId = interaction.values[0];
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+  if (!targetMember) {
     return interaction.update({
-      content:
-        "🗑️ **Basket empty**\n\n" +
-        "Your cart is empty.\n" +
-        "Choose a category below to start:",
-      components: await categorySelectComponents(),
+      content: "Could not find that member.",
+      components: staffModerationPanel().components,
     });
   }
 
-  const content = await buildCartMessage(interaction.user.id, heading);
-
-  return interaction.update({
-    content,
-    components: cartActionsComponents(),
-  });
-}
-
-/* -------------------------- SLASH COMMAND SETUP -------------------------- */
-
-const commands = [
-  new SlashCommandBuilder()
-    .setName("setupshop")
-    .setDescription("Post/refresh the shop menu message in the menu channel")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName("setupverify")
-    .setDescription("Post/refresh the verification panel in the verify channel")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName("setupstaffpanel")
-    .setDescription("Post/refresh the staff control panel in the staff-only channel")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-
-  new SlashCommandBuilder()
-    .setName("ping")
-    .setDescription("Health check"),
-].map((c) => c.toJSON());
-
-async function registerCommands() {
-  const rest = new REST({ version: "10" }).setToken(TOKEN);
-  await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-}
-
-/* ------------------------------- DISCORD -------------------------------- */
-
-const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
-  partials: [Partials.Channel],
-});
-
-client.on("interactionCreate", async (interaction) => {
-  let deferred = false;
-
-  try {
-    /* -------------------------- SLASH COMMANDS -------------------------- */
-
-    if (interaction.isChatInputCommand()) {
-      if (interaction.commandName === "ping") {
-        return interaction.reply({ content: "pong ✅", flags: 64 });
-      }
-
-      if (interaction.commandName === "setupshop") {
-        await interaction.deferReply({ flags: 64 });
-        deferred = true;
-
-        const menuChannel = await client.channels.fetch(MENU_CHANNEL_ID);
-
-        const content =
-          `**Welcome to ${STORE_NAME}!**\n\n` +
-          `**How it works:**\n` +
-          `1) Click the button below to get started\n` +
-          `2) Enter your shipping details\n` +
-          `3) Browse categories and move back and forth freely\n` +
-          `4) Add multiple items to your basket\n` +
-          `5) Apply ${WELCOME_CODE} on your first order for ${WELCOME_DISCOUNT_PERCENT}% off\n` +
-          `6) Submit your order when you're done\n\n` +
-          `**Shipping:** UK Tracked ${money(SHIPPING_UK_PENCE)} • Europe ${money(SHIPPING_EU_PENCE)} • USA ${money(SHIPPING_USA_PENCE)}\n` +
-          `**Cut-off:** 15:30 (Mon–Fri Dispatch)\n\n` +
-          `If a shopping session is abandoned, the temporary shop channel auto closes after 5 minutes.`;
-
-        await menuChannel.send({ content, components: menuMessageComponents() });
-
-        return interaction.editReply("✅ Shop menu message posted/refreshed in the menu channel.");
-      }
-
-      if (interaction.commandName === "setupverify") {
-        await interaction.deferReply({ flags: 64 });
-        deferred = true;
-
-        const verifyChannel = await client.channels.fetch(VERIFY_CHANNEL_ID).catch(() => null);
-        if (!verifyChannel) {
-          return interaction.editReply("❌ Could not find the verify channel. Check VERIFY_CHANNEL_ID.");
-        }
-
-        const { embed, row } = verifyPanelComponents();
-
-        await verifyChannel.send({
-          embeds: [embed],
-          components: [row],
-        });
-
-        return interaction.editReply(`✅ Verification panel posted in <#${VERIFY_CHANNEL_ID}>.`);
-      }
-
-      if (interaction.commandName === "setupstaffpanel") {
-        await interaction.deferReply({ flags: 64 });
-        deferred = true;
-
-        const staffChannel = await client.channels.fetch(STAFF_ONLY_CHANNEL_ID).catch(() => null);
-        if (!staffChannel) {
-          return interaction.editReply("❌ Could not find the staff-only channel. Check STAFF_ONLY_CHANNEL_ID.");
-        }
-
-        const { embed, rows } = staffPanelComponents();
-
-        await staffChannel.send({
-          embeds: [embed],
-          components: rows,
-        });
-
-        return interaction.editReply(`✅ Staff panel posted in <#${STAFF_ONLY_CHANNEL_ID}>.`);
-      }
-    }
-
-    /* ------------------------------ BUTTONS ----------------------------- */
-
-    if (interaction.isButton()) {
-      const { customId } = interaction;
-
-      if (
-        customId === "browse_categories" ||
-        customId === "shop_view_cart" ||
-        customId === "shop_close_session" ||
-        customId === "cart_discount" ||
-        customId === "cart_clear" ||
-        customId === "cart_submit" ||
-        customId.startsWith("add_qty:") ||
-        customId.startsWith("add_qty_other:") ||
-        customId.startsWith("back_to_items:")
-      ) {
-        resetShopSessionTimeout(interaction.guild, interaction.user.id);
-      }
-
-      if (customId === "open_menu") {
-        return interaction.showModal(shippingModal());
-      }
-
-      if (customId === "verify_open_modal") {
-        return interaction.showModal(verifyModal());
-      }
-
-      if (customId.startsWith("verify_approve:")) {
-        const [, targetUserId] = customId.split(":");
-
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const guild = interaction.guild;
-        const member = await guild.members.fetch(targetUserId).catch(() => null);
-
-        if (!member) {
-          return interaction.reply({ content: "Could not find that user in the server.", flags: 64 });
-        }
-
-        const verifiedRole =
-          guild.roles.cache.get(VERIFIED_ROLE_ID) ||
-          (await guild.roles.fetch(VERIFIED_ROLE_ID).catch(() => null));
-
-        if (!verifiedRole) {
-          return interaction.reply({ content: "Could not find the Verified role. Check VERIFIED_ROLE_ID.", flags: 64 });
-        }
-
-        if (member.roles.cache.has(VERIFIED_ROLE_ID)) {
-          return interaction.reply({ content: "That user is already verified.", flags: 64 });
-        }
-
-        await member.roles.add(VERIFIED_ROLE_ID, `Approved by ${interaction.user.tag}`);
-
-        await interaction.update({
-          content: `✅ Verified <@${targetUserId}> by <@${interaction.user.id}>`,
-          embeds: interaction.message.embeds,
-          components: [],
-        });
-
-        try {
-          await member.send(`✅ You have been verified in **${guild.name}** and should now have access to the full server.`);
-        } catch {}
-
-        return;
-      }
-
-      /* --------------------------- STAFF BUTTONS --------------------------- */
-
-      if (customId === "staff_panel_home") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        const { embed, rows } = staffPanelComponents();
-
-        return interaction.reply({
-          embeds: [embed],
-          components: rows,
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_open_mod_panel") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.reply({
-          content: "**Moderation Panel**\nChoose an action below:",
-          components: moderationPanelComponents(),
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_open_stock_flow") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.reply({
-          content: "Choose a category:",
-          components: await staffCategorySelect("staff_stock_select_category"),
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_open_orderlookup_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-        return interaction.showModal(staffOrderLookupModal());
-      }
-
-      if (customId === "staff_open_create_discount_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-        return interaction.showModal(staffCreateDiscountModal());
-      }
-
-      if (customId === "staff_open_toggle_discount_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-        return interaction.showModal(staffToggleDiscountModal());
-      }
-
-      if (customId === "staff_open_add_category_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-        return interaction.showModal(staffAddCategoryModal());
-      }
-
-      if (customId === "staff_open_rename_category_flow") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.reply({
-          content: "Choose the category you want to rename:",
-          components: await staffCategorySelect("staff_rename_category_select"),
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_open_delete_category_flow") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.reply({
-          content: "Choose the category you want to delete:",
-          components: await staffCategorySelect("staff_delete_category_select"),
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_open_add_product_flow") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.reply({
-          content: "Choose the category you want to add a product to:",
-          components: await staffCategorySelect("staff_add_product_select_category"),
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_open_edit_product_flow") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.reply({
-          content: "Choose the category containing the product you want to edit:",
-          components: await staffCategorySelect("staff_edit_product_select_category"),
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_open_rename_product_modal:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_price_modal:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
-      }
-
-      if (customId.startsWith("staff_open_stock_modal_direct:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_move_product_flow:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.reply({
-          content: `Choose the new category for **${product.product_name}** (${sku}):`,
-          components: await staffCategorySelect(`staff_move_product_select_category:${sku}`),
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_delete_product_confirm:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const deleted = await deleteProduct(sku);
-        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.reply({
-          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_back_edit_products:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const [, categoryId] = customId.split(":");
-        return interaction.update({
-          content: "Choose a product:",
-          components: await staffProductSelectByCategory("staff_edit_product_select_product", categoryId),
-        });
-      }
-
-      if (customId === "staff_restock_all_confirm") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.reply({
-          content: "Are you sure you want to restock all items back to their default values?",
-          components: [
-            new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId("staff_restock_all_execute")
-                .setLabel("Yes, restock all")
-                .setStyle(ButtonStyle.Danger),
-              new ButtonBuilder()
-                .setCustomId("staff_panel_home")
-                .setLabel("Back")
-                .setStyle(ButtonStyle.Secondary)
-            ),
-          ],
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_restock_all_execute") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        await restockAllToDefault();
-
-        return interaction.update({
-          content: "✅ All stock reset to default values.",
-          components: [],
-        });
-      }
-
-      /* ------------------------ MODERATION BUTTONS ------------------------ */
-
-      if (customId === "staff_mod_add_verified") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.showModal(
-          staffMemberSearchModal("add_verified", "Add Verified Role")
-        );
-      }
-
-      if (customId === "staff_mod_remove_verified") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.showModal(
-          staffMemberSearchModal("remove_verified", "Remove Verified Role")
-        );
-      }
-
-      if (customId === "staff_mod_timeout") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.showModal(
-          staffMemberSearchModal("timeout", "Find Member To Timeout")
-        );
-      }
-
-      if (customId === "staff_mod_untimeout") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.showModal(
-          staffMemberSearchModal("untimeout", "Find Member To Remove Timeout")
-        );
-      }
-
-      if (customId === "staff_mod_kick") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.showModal(
-          staffMemberSearchModal("kick", "Find Member To Kick")
-        );
-      }
-
-      if (customId === "staff_mod_ban") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.showModal(
-          staffMemberSearchModal("ban", "Find Member To Ban")
-        );
-      }
-
-      if (customId === "staff_mod_unban") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        return interaction.showModal(staffUnbanModal());
-      }
-
-      /* ---------------------------- SHOP BUTTONS ---------------------------- */
-
-      if (customId === "browse_categories") {
-        return showCategoriesInSession(interaction, "Choose a category:");
-      }
-
-      if (customId === "shop_view_cart") {
-        return showCartInSession(interaction);
-      }
-
-      if (customId === "shop_close_session") {
-        await interaction.update({
-          content: "🗑️ Closing your shop session...",
-          components: [],
-        });
-
-        setTimeout(async () => {
-          await destroyShopSessionByChannel(interaction.channel, interaction.user.id, "Shop session closed by user");
-        }, 1500);
-
-        return;
-      }
-
-      if (customId.startsWith("back_to_items:")) {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-
-        const [, categoryId] = customId.split(":");
-        const category = await getCategoryById(categoryId);
-        const itemComponents = await itemSelectComponents(categoryId);
-
-        return interaction.update({
-          content: `Category selected: **${category?.category_name || "Unknown"}**\nNow choose an item:`,
-          components: itemComponents,
-        });
-      }
-
-      if (customId.startsWith("add_qty:")) {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-
-        const [, categoryId, sku, qtyStr] = customId.split(":");
-        const qty = parseInt(qtyStr, 10);
-
-        const item = await getProductBySku(sku);
-        if (!item) {
-          return interaction.update({
-            content: "❌ Item not found.",
-            components: await categorySelectComponents(),
-          });
-        }
-
-        const stockQty = await getStockForSku(item.sku);
-        if (stockQty <= 0) {
-          return interaction.update({
-            content: "❌ That item is out of stock.",
-            components: await categorySelectComponents(),
-          });
-        }
-
-        await addCartItem(interaction.user.id, {
-          sku: item.sku,
-          name: item.product_name,
-          size: DEFAULT_SIZE,
-          color: DEFAULT_COLOR,
-          qty,
-          price_pence: item.price_pence,
-        });
-
-        const content = await buildCartMessage(interaction.user.id);
-
-        return interaction.update({
-          content,
-          components: cartActionsComponents(),
-        });
-      }
-
-      if (customId.startsWith("add_qty_other:")) {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-        const [, categoryId, sku] = customId.split(":");
-        return interaction.showModal(qtyOtherModal(categoryId, sku));
-      }
-
-      if (customId === "cart_discount") {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-
-        const cart = await getCartSummary(interaction.user.id);
-        if (!cart.items.length) {
-          return interaction.update({
-            content:
-              "🗑️ **Basket empty**\n\n" +
-              "Your cart is empty.\n" +
-              "Choose a category below to start:",
-            components: await categorySelectComponents(),
-          });
-        }
-
-        return interaction.showModal(discountCodeModal());
-      }
-
-      if (customId === "cart_clear") {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-
-        await clearCart(interaction.user.id);
-        await clearCartDiscount(interaction.user.id);
-
-        await interaction.update({
-          content: "🗑️ Your cart has been cleared. This shop channel will now close.",
-          components: [],
-        });
-
-        setTimeout(async () => {
-          await destroyShopSessionByChannel(interaction.channel, interaction.user.id, "Cart cleared and shop closed");
-        }, 1500);
-
-        return;
-      }
-
-      if (customId === "cart_submit") {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-
-        if (isSubmitLocked(interaction.user.id)) {
-          return interaction.update({
-            content: "Your order is already being processed. Please wait a few seconds.",
-            components: cartActionsComponents(true),
-          });
-        }
-
-        setSubmitLock(interaction.user.id);
-
-        try {
-          const existingPendingOrder = await hasUserPendingOrder(interaction.user.id);
-          if (existingPendingOrder) {
-            return interaction.update({
-              content: "You already have an order awaiting completion. Please contact staff if needed.",
-              components: cartActionsComponents(),
-            });
-          }
-
-          const cart = await getCartSummary(interaction.user.id);
-          if (!cart.items.length) {
-            return interaction.update({
-              content:
-                "🗑️ **Basket empty**\n\n" +
-                "Your cart is empty.\n" +
-                "Choose a category below to start:",
-              components: await categorySelectComponents(),
-            });
-          }
-
-          const shippingProfile = await getUserShippingProfile(interaction.user.id);
-          if (!shippingProfile) {
-            return interaction.update({
-              content: "I don't have your shipping details yet. Click the menu button again and enter your details.",
-              components: [],
-            });
-          }
-
-          for (const it of cart.items) {
-            const stockQty = await getStockForSku(it.sku);
-            if (it.qty > stockQty) {
-              return interaction.update({
-                content: `Stock changed. Only ${stockQty} left for ${it.name}. Please update your basket and try again.`,
-                components: cartActionsComponents(),
-              });
-            }
-          }
-
-          const subtotal = cart.subtotal_pence;
-          const shipping = getShippingPenceForCountry(shippingProfile.country);
-
-          let discount = await getCartDiscount(interaction.user.id);
-
-          if (discount.discount_code) {
-            const validation = await validateDiscountCodeForUser(interaction.user.id, discount.discount_code);
-
-            if (!validation.valid) {
-              await clearCartDiscount(interaction.user.id);
-              return interaction.update({
-                content: `${validation.reason} The code has been removed from this basket.`,
-                components: cartActionsComponents(),
-              });
-            }
-
-            if (Number(discount.discount_percent || 0) !== Number(validation.discount_percent || 0)) {
-              await setCartDiscount(interaction.user.id, validation.code, validation.discount_percent);
-              discount = await getCartDiscount(interaction.user.id);
-            }
-          }
-
-          const totals = calculateDiscountedTotals(subtotal, shipping, discount.discount_percent);
-          const total = totals.total;
-
-          const orderRes = await pool.query(
-            `
-            INSERT INTO orders (
-              user_id, full_name, email, phone, full_address, country,
-              subtotal_pence, shipping_pence, total_pence, discount_code,
-              discount_percent, discount_amount_pence, status
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending')
-            RETURNING order_id
-            `,
-            [
-              interaction.user.id,
-              shippingProfile.full_name,
-              shippingProfile.email,
-              shippingProfile.phone,
-              shippingProfile.full_address,
-              shippingProfile.country,
-              subtotal,
-              shipping,
-              total,
-              discount.discount_code,
-              discount.discount_percent,
-              totals.discountAmount,
-            ]
-          );
-
-          const orderId = orderRes.rows[0].order_id;
-
-          for (const it of cart.items) {
-            await pool.query(
-              `
-              INSERT INTO order_items (order_id, sku, name, size, color, qty, price_pence)
-              VALUES ($1,$2,$3,$4,$5,$6,$7)
-              `,
-              [orderId, it.sku, it.name, it.size, it.color, it.qty, it.price_pence]
-            );
-
-            await pool.query(
-              `
-              UPDATE stock_items
-              SET stock_qty = stock_qty - $1,
-                  updated_at = NOW()
-              WHERE sku = $2 AND stock_qty >= $1
-              `,
-              [it.qty, it.sku]
-            );
-          }
-
-          if (discount.discount_code) {
-            await recordDiscountCodeUse(interaction.user.id, discount.discount_code, orderId);
-          }
-
-          const guild = interaction.guild;
-          const receiptChannel = await createReceiptChannel(guild, interaction.user, orderId);
-
-          await pool.query(`UPDATE orders SET receipt_channel_id=$1 WHERE order_id=$2`, [receiptChannel.id, orderId]);
-
-          await receiptChannel.send({
-            content:
-              `<@${interaction.user.id}> **Thanks!** Your order has been received.\n\n` +
-              `✅ Please pay by **bank transfer** using the details in the receipt below.\n` +
-              `<@&${STAFF_ROLE_ID}> once confirmed, please mark as paid or dispatched when appropriate.`,
-            embeds: [
-              receiptEmbed(
-                orderId,
-                cart.items,
-                subtotal,
-                totals.discountAmount,
-                discount.discount_code,
-                shipping,
-                total,
-                shippingProfile,
-                "pending"
-              ),
-            ],
-            components: staffReceiptControls(orderId, "pending"),
-          });
-
-          await interaction.update({
-            content: `✅ Order submitted successfully.\nYour receipt channel is ready: <#${receiptChannel.id}>`,
-            components: [],
-          });
-
-          clearShopSessionTimeout(interaction.user.id);
-          clearTrackedCartUiMessage(interaction.user.id);
-          clearTrackedShopSessionChannel(interaction.user.id);
-
-          setTimeout(async () => {
-            try {
-              await interaction.channel.delete("Shop session completed");
-            } catch (err) {
-              console.error("Failed to delete completed shop session channel:", err);
-            }
-          }, 2000);
-
-          return;
-        } finally {
-          clearSubmitLock(interaction.user.id);
-        }
-      }
-
-      /* ------------------------- ORDER ACTION BUTTONS ------------------------ */
-
-      if (customId.startsWith("staff_mark_paid:")) {
-        const [, orderIdStr] = customId.split(":");
-        const orderId = parseInt(orderIdStr, 10);
-
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        await pool.query(`UPDATE orders SET status='paid' WHERE order_id=$1`, [orderId]);
-
-        await interaction.update({
-          content: `✅ Order #${orderId} marked as paid.`,
-          embeds: interaction.message.embeds,
-          components: staffReceiptControls(orderId, "paid"),
-        });
-
-        await interaction.channel.send(`✅ Order #${orderId} has been marked as paid.`);
-        return;
-      }
-
-      if (customId.startsWith("staff_mark_dispatched:")) {
-        const [, orderIdStr] = customId.split(":");
-        const orderId = parseInt(orderIdStr, 10);
-
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        await pool.query(`UPDATE orders SET status='dispatched' WHERE order_id=$1`, [orderId]);
-
-        await interaction.update({
-          content: `📦 Order #${orderId} marked as dispatched.`,
-          embeds: interaction.message.embeds,
-          components: staffReceiptControls(orderId, "dispatched"),
-        });
-
-        await interaction.channel.send(`📦 Order #${orderId} has been marked as dispatched.`);
-        return;
-      }
-
-      if (customId.startsWith("staff_cancel_order:")) {
-        const [, orderIdStr] = customId.split(":");
-        const orderId = parseInt(orderIdStr, 10);
-
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const orderRes = await pool.query(
-          `SELECT status, user_id FROM orders WHERE order_id=$1`,
-          [orderId]
-        );
-
-        if (!orderRes.rows.length) {
-          return interaction.reply({ content: "Order not found.", flags: 64 });
-        }
-
-        const currentStatus = orderRes.rows[0].status;
-        const customerUserId = orderRes.rows[0].user_id;
-
-        if (currentStatus === "cancelled") {
-          return interaction.reply({ content: "This order is already cancelled.", flags: 64 });
-        }
-
-        if (currentStatus === "dispatched" || currentStatus === "completed") {
-          return interaction.reply({ content: "Dispatched or completed orders cannot be cancelled.", flags: 64 });
-        }
-
-        const itemsRes = await pool.query(`SELECT sku, qty FROM order_items WHERE order_id=$1`, [orderId]);
-
-        for (const item of itemsRes.rows) {
-          await pool.query(
-            `
-            UPDATE stock_items
-            SET stock_qty = stock_qty + $1,
-                updated_at = NOW()
-            WHERE sku = $2
-            `,
-            [item.qty, item.sku]
-          );
-        }
-
-        await pool.query(`UPDATE orders SET status='cancelled' WHERE order_id=$1`, [orderId]);
-
-        await interaction.update({
-          content: `❌ Order #${orderId} has been cancelled.`,
-          embeds: interaction.message.embeds,
-          components: staffReceiptControls(orderId, "cancelled"),
-        });
-
-        await interaction.channel.send(`❌ Order #${orderId} has been cancelled. Stock has been restored.`);
-
-        try {
-          await interaction.channel.permissionOverwrites.edit(customerUserId, {
-            SendMessages: false,
-          });
-        } catch {}
-
-        return;
-      }
-
-      if (customId.startsWith("staff_complete_order:")) {
-        const [, orderIdStr] = customId.split(":");
-        const orderId = parseInt(orderIdStr, 10);
-
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const orderRes = await pool.query(`SELECT status FROM orders WHERE order_id=$1`, [orderId]);
-
-        if (!orderRes.rows.length) {
-          return interaction.reply({ content: "Order not found.", flags: 64 });
-        }
-
-        const currentStatus = orderRes.rows[0].status;
-
-        if (currentStatus === "cancelled") {
-          return interaction.reply({ content: "Cancelled orders cannot be completed.", flags: 64 });
-        }
-
-        if (currentStatus === "completed") {
-          return interaction.reply({ content: "This order is already completed.", flags: 64 });
-        }
-
-        if (currentStatus !== "dispatched") {
-          return interaction.reply({ content: "Order must be marked as dispatched before it can be completed.", flags: 64 });
-        }
-
-        await pool.query(`UPDATE orders SET status='completed' WHERE order_id=$1`, [orderId]);
-
-        await interaction.update({
-          content: `✅ Order #${orderId} marked as completed. Closing this channel in 5 seconds...`,
-          embeds: interaction.message.embeds,
-          components: staffReceiptControls(orderId, "completed"),
-        });
-
-        await interaction.channel.send(`✅ Order #${orderId} is complete. This channel will now close.`);
-
-        setTimeout(async () => {
-          try {
-            await interaction.channel.delete("Order completed and closed by staff");
-          } catch (err) {
-            console.error("Failed to delete completed order channel:", err);
-          }
-        }, 5000);
-
-        return;
-      }
-    }
-
-      /* -------------------------- STRING SELECT MENUS ------------------------- */
-
-    if (interaction.isStringSelectMenu()) {
-      const { customId } = interaction;
-
-      if (
-        customId === "select_category" ||
-        customId.startsWith("select_item:")
-      ) {
-        resetShopSessionTimeout(interaction.guild, interaction.user.id);
-      }
-
-      /* ----------------------------- STAFF MENUS ---------------------------- */
-
-      if (customId === "staff_stock_select_category") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-
-        const categoryId = interaction.values[0];
-
-        return interaction.update({
-          content: "Choose the product you want to update stock for:",
-          components: await staffProductSelectByCategory("staff_stock_select_product", categoryId),
-        });
-      }
-
-      if (customId === "staff_stock_select_product") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const sku = interaction.values[0];
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
-      }
-
-      if (customId === "staff_rename_category_select") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const categoryId = interaction.values[0];
-        const category = await getCategoryById(categoryId);
-        if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
-
-        return interaction.showModal(staffRenameCategoryModal(categoryId, category.category_name));
-      }
-
-      if (customId === "staff_delete_category_select") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const categoryId = interaction.values[0];
-        const category = await getCategoryById(categoryId);
-        if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
-
-        const deleted = await deleteCategory(categoryId);
-        if (!deleted) return interaction.reply({ content: "Category not found.", flags: 64 });
-
-        return interaction.update({
-          content: `✅ Deleted category **${deleted.category_name}**`,
-          components: [],
-        });
-      }
-
-      if (customId === "staff_add_product_select_category") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const categoryId = interaction.values[0];
-        const category = await getCategoryById(categoryId);
-        if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
-
-        return interaction.showModal(staffAddProductModal(categoryId, category.category_name));
-      }
-
-      if (customId === "staff_edit_product_select_category") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const categoryId = interaction.values[0];
-
-        return interaction.update({
-          content: "Choose a product:",
-          components: await staffProductSelectByCategory("staff_edit_product_select_product", categoryId),
-        });
-      }
-
-      if (customId === "staff_edit_product_select_product") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const sku = interaction.values[0];
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content:
-            `**${product.product_name}**\n` +
-            `SKU: ${product.sku}\n` +
-            `Category: ${product.category_name}\n` +
-            `Price: ${money(product.price_pence)}\n` +
-            `Stock: ${product.stock_qty}`,
-          components: staffEditProductActionComponents(product.category_id, sku),
-        });
-      }
-
-      if (customId.startsWith("staff_move_product_select_category:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const categoryId = interaction.values[0];
-        const category = await getCategoryById(categoryId);
-        const moved = await moveProductToCategory(sku, categoryId);
-
-        if (!moved) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content: `✅ Product moved to **${category?.category_name || "new category"}**`,
-          components: [],
-        });
-      }
-
-      /* -------------------------- MODERATION MENUS ------------------------- */
-
-      if (customId.startsWith("staff_member_search_select:")) {
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const [, action] = customId.split(":");
-        const targetUserId = interaction.values[0];
-        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-        if (!targetMember) {
-          return interaction.update({
-            content: "Could not find that member.",
-            components: [],
-          });
-        }
-
-        const check = canActOnTarget(interaction.member, targetMember);
-        if (!check.ok) {
-          return interaction.update({
-            content: check.reason,
-            components: [],
-          });
-        }
-
-        if (action === "add_verified") {
-          if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-            return interaction.update({
-              content: "That member already has the verified role.",
-              components: [],
-            });
-          }
-
-          await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
-
-          return interaction.update({
-            content: `✅ Added verified role to <@${targetMember.id}>`,
-            components: [],
-          });
-        }
-
-        if (action === "remove_verified") {
-          if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-            return interaction.update({
-              content: "That member does not currently have the verified role.",
-              components: [],
-            });
-          }
-
-          await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
-
-          return interaction.update({
-            content: `✅ Removed verified role from <@${targetMember.id}>`,
-            components: [],
-          });
-        }
-
-        if (action === "timeout") {
-          return interaction.showModal(
-            staffTimeoutModal(
-              targetMember.id,
-              targetMember.displayName || targetMember.user.username
-            )
-          );
-        }
-
-        if (action === "untimeout") {
-          if (!targetMember.isCommunicationDisabled()) {
-            return interaction.update({
-              content: "That member is not currently timed out.",
-              components: [],
-            });
-          }
-
-          await targetMember.timeout(null, `Timeout removed by ${interaction.user.tag}`);
-
-          return interaction.update({
-            content: `✅ Removed timeout from <@${targetMember.id}>`,
-            components: [],
-          });
-        }
-
-        if (action === "kick") {
-          await targetMember.kick(`Kicked by ${interaction.user.tag}`);
-
-          return interaction.update({
-            content: `✅ Kicked <@${targetMember.id}>`,
-            components: [],
-          });
-        }
-
-        if (action === "ban") {
-          return interaction.showModal(
-            staffBanModal(
-              targetMember.id,
-              targetMember.displayName || targetMember.user.username
-            )
-          );
-        }
-      }
-
-      /* ------------------------------ SHOP MENUS ----------------------------- */
-
-      if (customId === "select_category") {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-
-        const categoryId = interaction.values[0];
-        const category = await getCategoryById(categoryId);
-        const itemComponents = await itemSelectComponents(categoryId);
-
-        return interaction.update({
-          content: `Category selected: **${category?.category_name || "Unknown"}**\nNow choose an item:`,
-          components: itemComponents,
-        });
-      }
-
-      if (customId.startsWith("select_item:")) {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
-
-        const [, categoryId] = customId.split(":");
-        const sku = interaction.values[0];
-
-        const stockQty = await getStockForSku(sku);
-        if (stockQty <= 0) {
-          return interaction.update({
-            content: "That item is out of stock.",
-            components: await itemSelectComponents(categoryId),
-          });
-        }
-
-        const qtyComponents = await qtyButtonsComponents(categoryId, sku);
-
-        return interaction.update({
-          content: `Selected item — how many? (In stock: ${stockQty})`,
-          components: qtyComponents,
-        });
-      }
-    }
-
-    /* ------------------------------ MODAL SUBMITS ----------------------------- */
-
-    if (interaction.isModalSubmit()) {
-      const { customId } = interaction;
-
-      if (
-        customId === "shipping_modal" ||
-        customId === "discount_code_modal" ||
-        customId.startsWith("qty_other_modal:")
-      ) {
-        resetShopSessionTimeout(interaction.guild, interaction.user.id);
-      }
-
-      if (customId === "shipping_modal") {
-        const full_name = interaction.fields.getTextInputValue("full_name")?.trim();
-        const email = interaction.fields.getTextInputValue("email")?.trim();
-        const phone = interaction.fields.getTextInputValue("phone")?.trim();
-        const full_address = interaction.fields.getTextInputValue("full_address")?.trim();
-        const country = interaction.fields.getTextInputValue("country")?.trim();
-
-        if (!full_name || !email || !phone || !full_address || !country) {
-          return interaction.reply({ content: "All fields are required.", flags: 64 });
-        }
-
-        await upsertProfile(interaction.user.id, full_name, email, phone, { full_address, country });
-
-        const payload = {
-          content: "✅ Details saved. Choose a category:",
-          components: await categorySelectComponents(),
-        };
-
-        const { channel } = await sendOrEditCartUiMessage(interaction, payload, { keepReply: true });
-
-        const continueOrderRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setLabel("Continue Order")
-            .setStyle(ButtonStyle.Link)
-            .setURL(`https://discord.com/channels/${interaction.guild.id}/${channel.id}`)
-        );
-
-        await interaction.editReply({
-          content: `✅ Details saved. Your shop channel is ready.\nIt will auto close after 5 minutes of inactivity.`,
-          components: [continueOrderRow],
-        });
-
-        setTimeout(async () => {
-          try {
-            await interaction.deleteReply();
-          } catch {}
-        }, 20000);
-
-        return;
-      }
-
-      if (customId === "verify_submit_modal") {
-        const submittedName = interaction.fields.getTextInputValue("verify_name")?.trim();
-        const foundUs = interaction.fields.getTextInputValue("verify_found")?.trim();
-        const referral = interaction.fields.getTextInputValue("verify_referral")?.trim();
-        const email = interaction.fields.getTextInputValue("verify_email")?.trim();
-        const phone = interaction.fields.getTextInputValue("verify_phone")?.trim();
-
-        if (!submittedName || !foundUs || !referral || !email || !phone) {
-          return interaction.reply({ content: "All verification fields are required.", flags: 64 });
-        }
-
-        const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-        if (!emailLooksValid) {
-          return interaction.reply({ content: "Please enter a valid email address.", flags: 64 });
-        }
-
-        const phoneClean = phone.replace(/[^\d+]/g, "");
-        if (phoneClean.length < 7) {
-          return interaction.reply({ content: "Please enter a valid phone number.", flags: 64 });
-        }
-
-        const logChannel = await interaction.guild.channels.fetch(VERIFICATION_LOG_CHANNEL_ID).catch(() => null);
-        if (!logChannel) {
-          return interaction.reply({ content: "Could not find the verification log channel. Check VERIFICATION_LOG_CHANNEL_ID.", flags: 64 });
-        }
-
-        const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
-        if (member?.roles?.cache?.has(VERIFIED_ROLE_ID)) {
-          return interaction.reply({ content: "You are already verified.", flags: 64 });
-        }
-
-        const embed = new EmbedBuilder()
-          .setTitle("New Verification Submission")
-          .addFields(
-            { name: "User", value: `<@${interaction.user.id}>` },
-            { name: "Username", value: `${interaction.user.tag}` },
-            { name: "User ID", value: interaction.user.id },
-            { name: "Full name", value: submittedName },
-            { name: "How they heard about us", value: foundUs },
-            { name: "Referral / who sent them", value: referral },
-            { name: "Email", value: email },
-            { name: "Phone", value: phone }
-          )
-          .setTimestamp();
-
-        await logChannel.send({
-          content: `New verification request from <@${interaction.user.id}>`,
-          embeds: [embed],
-          components: verifyApproveComponents(interaction.user.id),
-          allowedMentions: { parse: [] },
-        });
-
-        return interaction.reply({
-          content: "✅ Thanks. Your verification has been submitted and will be reviewed shortly.",
-          flags: 64,
-        });
-      }
-
-      /* ----------------------------- STAFF MODALS ---------------------------- */
-
-      if (customId === "staff_add_category_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const categoryName = interaction.fields.getTextInputValue("category_name")?.trim();
-        if (!categoryName) return interaction.reply({ content: "Category name is required.", flags: 64 });
-
-        const created = await createCategory(categoryName);
-
-        return interaction.reply({
-          content: `✅ Category created: **${created.category_name}**`,
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_rename_category_modal:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const [, categoryId] = customId.split(":");
-        const newName = interaction.fields.getTextInputValue("new_category_name")?.trim();
-
-        const updated = await renameCategory(categoryId, newName);
-        if (!updated) return interaction.reply({ content: "Category not found.", flags: 64 });
-
-        return interaction.reply({
-          content: `✅ Category renamed to **${updated.category_name}**`,
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_add_product_modal:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const [, categoryId] = customId.split(":");
-        const sku = interaction.fields.getTextInputValue("sku")?.trim();
-        const productName = interaction.fields.getTextInputValue("product_name")?.trim();
-        const priceGbp = interaction.fields.getTextInputValue("price_gbp")?.trim();
-        const stockQtyRaw = interaction.fields.getTextInputValue("stock_qty")?.trim();
-
-        const pricePence = parsePriceToPence(priceGbp);
-        const stockQty = parseInt(stockQtyRaw, 10);
-
-        if (!sku || !productName) {
-          return interaction.reply({ content: "SKU and product name are required.", flags: 64 });
-        }
-
-        if (pricePence === null) {
-          return interaction.reply({ content: "Enter a valid GBP price.", flags: 64 });
-        }
-
-        if (!Number.isFinite(stockQty) || stockQty < 0) {
-          return interaction.reply({ content: "Enter a valid stock quantity.", flags: 64 });
-        }
-
-        const created = await createProduct({
-          categoryId,
-          sku,
-          productName,
-          pricePence,
-          stockQty,
-        });
-
-        return interaction.reply({
-          content: `✅ Product created: **${created.product_name}** (${created.sku})`,
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_rename_product_modal:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const newName = interaction.fields.getTextInputValue("new_product_name")?.trim();
-
-        const updated = await renameProduct(sku, newName);
-        if (!updated) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.reply({
-          content: `✅ Product renamed to **${updated.product_name}**`,
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_edit_price_modal:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const priceGbp = interaction.fields.getTextInputValue("price_gbp")?.trim();
-        const pricePence = parsePriceToPence(priceGbp);
-
-        if (pricePence === null) {
-          return interaction.reply({ content: "Enter a valid GBP price.", flags: 64 });
-        }
-
-        const updated = await updateProductPrice(sku, pricePence);
-        if (!updated) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.reply({
-          content: `✅ Price updated for **${updated.product_name}** → ${money(updated.price_pence)}`,
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_stock_qty_modal:")) {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const [, sku] = customId.split(":");
-        const qtyRaw = interaction.fields.getTextInputValue("stock_qty")?.trim();
-        const qty = parseInt(qtyRaw, 10);
-
-        if (!Number.isFinite(qty) || qty < 0) {
-          return interaction.reply({ content: "Enter a valid stock quantity of 0 or more.", flags: 64 });
-        }
-
-        const updated = await updateProductStock(sku, qty);
-        if (!updated) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.reply({
-          content: `✅ Stock updated for **${updated.product_name}** (${updated.sku}) → ${updated.stock_qty}`,
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_orderlookup_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const orderIdRaw = interaction.fields.getTextInputValue("lookup_order_id")?.trim();
-        const orderId = parseInt(orderIdRaw, 10);
-
-        if (!Number.isFinite(orderId) || orderId <= 0) {
-          return interaction.reply({ content: "Enter a valid order ID.", flags: 64 });
-        }
-
-        const orderRes = await pool.query(`SELECT * FROM orders WHERE order_id=$1`, [orderId]);
-        if (!orderRes.rows.length) {
-          return interaction.reply({ content: "Order not found.", flags: 64 });
-        }
-
-        const order = orderRes.rows[0];
-
-        const itemsRes = await pool.query(
-          `SELECT name, qty, price_pence FROM order_items WHERE order_id=$1 ORDER BY id ASC`,
-          [orderId]
-        );
-
-        const itemLines = itemsRes.rows.map(
-          (it) => `• ${it.name} × ${it.qty} — ${money(it.qty * it.price_pence)}`
-        );
-
-        const embed = new EmbedBuilder()
-          .setTitle(`Order #${orderId}`)
-          .addFields(
-            { name: "Status", value: order.status || "unknown", inline: true },
-            { name: "Total", value: money(order.total_pence || 0), inline: true },
-            { name: "User ID", value: order.user_id || "unknown", inline: true },
-            { name: "Receipt Channel", value: order.receipt_channel_id ? `<#${order.receipt_channel_id}>` : "None" },
-            { name: "Items", value: itemLines.join("\n") || "_No items_" }
-          )
-          .setTimestamp(new Date(order.created_at));
-
-        return interaction.reply({
-          embeds: [embed],
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_create_discount_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const codeRaw = interaction.fields.getTextInputValue("discount_code")?.trim();
-        const percentRaw = interaction.fields.getTextInputValue("discount_percent")?.trim();
-
-        const code = normalizeDiscountCode(codeRaw);
-        const percent = parseInt(percentRaw, 10);
-
-        if (!code) {
-          return interaction.reply({ content: "Enter a valid code.", flags: 64 });
-        }
-
-        if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
-          return interaction.reply({ content: "Enter a valid percent from 0 to 100.", flags: 64 });
-        }
-
-        await createDiscountCodeRecord(code, percent);
-
-        return interaction.reply({
-          content: `✅ Discount code **${code}** created/updated at ${percent}% and set active.`,
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_toggle_discount_modal") {
-        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
-
-        const codeRaw = interaction.fields.getTextInputValue("discount_code")?.trim();
-        const stateRaw = interaction.fields.getTextInputValue("discount_active")?.trim().toLowerCase();
-
-        const code = normalizeDiscountCode(codeRaw);
-
-        if (!code) {
-          return interaction.reply({ content: "Enter a valid code.", flags: 64 });
-        }
-
-        let active;
-        if (stateRaw === "active") active = true;
-        else if (stateRaw === "inactive") active = false;
-        else {
-          return interaction.reply({ content: "Type either active or inactive.", flags: 64 });
-        }
-
-        const updated = await setDiscountCodeActiveState(code, active);
-        if (!updated) {
-          return interaction.reply({ content: "That discount code was not found.", flags: 64 });
-        }
-
-        return interaction.reply({
-          content: `✅ Discount code **${updated.code}** is now **${updated.is_active ? "active" : "inactive"}**.`,
-          flags: 64,
-        });
-      }
-
-      /* --------------------------- MODERATION MODALS --------------------------- */
-
-      if (customId.startsWith("staff_member_search_modal:")) {
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        if (!isStaffChannel(interaction)) {
-          return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
-        }
-
-        const [, action] = customId.split(":");
-        const search = interaction.fields.getTextInputValue("member_search")?.trim();
-
-        if (!search) {
-          return interaction.reply({ content: "Enter a search term.", flags: 64 });
-        }
-
-        let options = {};
-        if (action === "add_verified") {
-          options.excludeVerified = true;
-        }
-        if (action === "remove_verified") {
-          options.verifiedOnly = true;
-        }
-
-        const matches = await searchGuildMembers(interaction.guild, search, options);
-
-        if (!matches.length) {
-          return interaction.reply({
-            content: "No matching members found.",
-            flags: 64,
-          });
-        }
-
-        return interaction.reply({
-          content: "Choose a member:",
-          components: [
-            new ActionRowBuilder().addComponents(
-              new StringSelectMenuBuilder()
-                .setCustomId(`staff_member_search_select:${action}`)
-                .setPlaceholder("Select a member…")
-                .addOptions(memberSelectOptions(matches))
-            )
-          ],
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_timeout_modal:")) {
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const [, userId] = customId.split(":");
-        const targetMember = await ensureTargetMember(interaction.guild, userId);
-
-        if (!targetMember) {
-          return interaction.reply({ content: "Could not find that member.", flags: 64 });
-        }
-
-        const check = canActOnTarget(interaction.member, targetMember);
-        if (!check.ok) {
-          return interaction.reply({ content: check.reason, flags: 64 });
-        }
-
-        const minutesRaw = interaction.fields.getTextInputValue("timeout_minutes")?.trim();
-        const reasonRaw = interaction.fields.getTextInputValue("timeout_reason")?.trim();
-        const timeoutMs = timeoutMsFromMinutes(minutesRaw);
-
-        if (!timeoutMs) {
-          return interaction.reply({ content: "Enter a valid number of minutes.", flags: 64 });
-        }
-
-        const maxTimeoutMs = 28 * 24 * 60 * 60 * 1000;
-        if (timeoutMs > maxTimeoutMs) {
-          return interaction.reply({ content: "Timeout cannot exceed 28 days.", flags: 64 });
-        }
-
-        await targetMember.timeout(
-          timeoutMs,
-          reasonRaw || `Timed out by ${interaction.user.tag}`
-        );
-
-        return interaction.reply({
-          content: `✅ Timed out <@${targetMember.id}> for ${minutesRaw} minute(s).`,
-          flags: 64,
-        });
-      }
-
-      if (customId.startsWith("staff_ban_modal:")) {
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const [, userId] = customId.split(":");
-        const targetMember = await ensureTargetMember(interaction.guild, userId);
-
-        if (!targetMember) {
-          return interaction.reply({ content: "Could not find that member.", flags: 64 });
-        }
-
-        const check = canActOnTarget(interaction.member, targetMember);
-        if (!check.ok) {
-          return interaction.reply({ content: check.reason, flags: 64 });
-        }
-
-        const reasonRaw = interaction.fields.getTextInputValue("ban_reason")?.trim();
-
-        await targetMember.ban({
-          reason: reasonRaw || `Banned by ${interaction.user.tag}`,
-        });
-
-        return interaction.reply({
-          content: `✅ Banned <@${targetMember.id}>`,
-          flags: 64,
-        });
-      }
-
-      if (customId === "staff_unban_modal") {
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const userId = interaction.fields.getTextInputValue("unban_user_id")?.trim();
-        const reasonRaw = interaction.fields.getTextInputValue("unban_reason")?.trim();
-
-        if (!/^\d{16,20}$/.test(userId || "")) {
-          return interaction.reply({ content: "Enter a valid user ID.", flags: 64 });
-        }
-
-        const banRecord = await interaction.guild.bans.fetch(userId).catch(() => null);
-        if (!banRecord) {
-          return interaction.reply({ content: "That user is not currently banned.", flags: 64 });
-        }
-
-        await interaction.guild.members.unban(
-          userId,
-          reasonRaw || `Unbanned by ${interaction.user.tag}`
-        );
-
-        return interaction.reply({
-          content: `✅ Unbanned user ID \`${userId}\``,
-          flags: 64,
-        });
-      }
-
-      /* ------------------------------ SHOP MODALS ----------------------------- */
-
-      if (customId.startsWith("qty_other_modal:")) {
-        const [, categoryId, sku] = customId.split(":");
-        const qtyRaw = interaction.fields.getTextInputValue("qty");
-        const qty = parseInt(qtyRaw, 10);
-
-        if (!Number.isFinite(qty) || qty <= 0) {
-          return interaction.reply({ content: "Please enter a valid quantity (number > 0).", flags: 64 });
-        }
-
-        const item = await getProductBySku(sku);
-        if (!item) return interaction.reply({ content: "Item not found.", flags: 64 });
-
-        const stockQty = await getStockForSku(item.sku);
-        if (qty > stockQty) {
-          return interaction.reply({
-            content: `Only ${stockQty} in stock for ${item.product_name}.`,
-            flags: 64,
-          });
-        }
-
-        await addCartItem(interaction.user.id, {
-          sku: item.sku,
-          name: item.product_name,
-          size: DEFAULT_SIZE,
-          color: DEFAULT_COLOR,
-          qty,
-          price_pence: item.price_pence,
-        });
-
-        const content = await buildCartMessage(interaction.user.id);
-        await sendOrEditCartUiMessage(interaction, {
-          content,
-          components: cartActionsComponents(),
-        });
-        return;
-      }
-
-      if (customId === "discount_code_modal") {
-        const enteredRaw = interaction.fields.getTextInputValue("discount_code")?.trim();
-        const enteredCode = normalizeDiscountCode(enteredRaw);
-
-        if (!enteredCode) {
-          return interaction.reply({ content: "Please enter a code.", flags: 64 });
-        }
-
-        const cart = await getCartSummary(interaction.user.id);
-        if (!cart.items.length) {
-          return interaction.reply({ content: "Your cart is empty.", flags: 64 });
-        }
-
-        const existingDiscount = await getCartDiscount(interaction.user.id);
-        if (existingDiscount.discount_code) {
-          return interaction.reply({
-            content: `A code has already been applied to this order: ${existingDiscount.discount_code}`,
-            flags: 64,
-          });
-        }
-
-        const validation = await validateDiscountCodeForUser(interaction.user.id, enteredCode);
-        if (!validation.valid) {
-          return interaction.reply({
-            content: validation.reason,
-            flags: 64,
-          });
-        }
-
-        await setCartDiscount(interaction.user.id, validation.code, validation.discount_percent);
-
-        const content = await buildCartMessage(interaction.user.id, "✅ Discount code applied.");
-        await sendOrEditCartUiMessage(interaction, {
-          content,
-          components: cartActionsComponents(),
-        });
-        return;
-      }
-    }
-  } catch (err) {
-    console.error(err);
-
-    if (!interaction.isRepliable()) return;
-
-    try {
-      const msg = `❌ Error: ${err.message || "Unknown error"}`;
-      if (deferred || interaction.deferred) {
-        await interaction.editReply(msg);
-      } else if (interaction.replied) {
-        await interaction.followUp({ content: msg, flags: 64 });
-      } else {
-        await interaction.reply({ content: msg, flags: 64 });
-      }
-    } catch {}
+  const check = canActOnTarget(interaction.member, targetMember);
+  if (!check.ok) {
+    return interaction.update({
+      content: check.reason,
+      components: staffModerationPanel().components,
+    });
   }
-});
 
-/* ------------------------------- STARTUP ------------------------------- */
+  if (action === "add_verified") {
+    if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+      return interaction.update({
+        content: "That member already has the verified role.",
+        components: staffModerationPanel().components,
+      });
+    }
 
-client.once("clientReady", () => {
-  console.log("✅ Logged in as", client.user.tag);
-  console.log("✅ Slash commands registered");
-});
+    await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
 
-initDb()
-  .then(() => registerCommands())
-  .then(() => client.login(TOKEN))
-  .catch((err) => {
-    console.error("Startup error:", err);
-    process.exit(1);
+    return interaction.update({
+      content: `✅ Added verified role to <@${targetMember.id}>`,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "remove_verified") {
+    if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+      return interaction.update({
+        content: "That member does not currently have the verified role.",
+        components: staffModerationPanel().components,
+      });
+    }
+
+    await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+
+    return interaction.update({
+      content: `✅ Removed verified role from <@${targetMember.id}>`,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "timeout") {
+    return interaction.showModal(
+      staffTimeoutModal(
+        targetMember.id,
+        targetMember.displayName || targetMember.user.username
+      )
+    );
+  }
+
+  if (action === "untimeout") {
+    if (!targetMember.isCommunicationDisabled()) {
+      return interaction.update({
+        content: "That member is not currently timed out.",
+        components: staffModerationPanel().components,
+      });
+    }
+
+    await targetMember.timeout(null, `Timeout removed by ${interaction.user.tag}`);
+
+    return interaction.update({
+      content: `✅ Removed timeout from <@${targetMember.id}>`,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "kick") {
+    await targetMember.kick(`Kicked by ${interaction.user.tag}`);
+
+    return interaction.update({
+      content: `✅ Kicked <@${targetMember.id}>`,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "ban") {
+    return interaction.showModal(
+      staffBanModal(
+        targetMember.id,
+        targetMember.displayName || targetMember.user.username
+      )
+    );
+  }
+}
+
+/* --------------------------- STAFF MODAL RETURNS --------------------------- */
+/* keep these inside your interaction.isModalSubmit() block */
+
+if (customId === "staff_add_category_modal") {
+  const categoryName = interaction.fields.getTextInputValue("category_name")?.trim();
+  if (!categoryName) return interaction.reply({ content: "Category name is required.", flags: 64 });
+
+  const created = await createCategory(categoryName);
+
+  return interaction.reply({
+    content: `✅ Category created: **${created.category_name}**`,
+    flags: 64,
   });
+}
+
+if (customId.startsWith("staff_rename_category_modal:")) {
+  const [, categoryId] = customId.split(":");
+  const newName = interaction.fields.getTextInputValue("new_category_name")?.trim();
+
+  const updated = await renameCategory(categoryId, newName);
+  if (!updated) return interaction.reply({ content: "Category not found.", flags: 64 });
+
+  return interaction.reply({
+    content: `✅ Category renamed to **${updated.category_name}**`,
+    flags: 64,
+  });
+}
+
+if (customId.startsWith("staff_add_product_modal:")) {
+  const [, categoryId] = customId.split(":");
+  const sku = interaction.fields.getTextInputValue("sku")?.trim();
+  const productName = interaction.fields.getTextInputValue("product_name")?.trim();
+  const priceGbp = interaction.fields.getTextInputValue("price_gbp")?.trim();
+  const stockQtyRaw = interaction.fields.getTextInputValue("stock_qty")?.trim();
+
+  const pricePence = parsePriceToPence(priceGbp);
+  const stockQty = parseInt(stockQtyRaw, 10);
+
+  if (!sku || !productName) {
+    return interaction.reply({ content: "SKU and product name are required.", flags: 64 });
+  }
+
+  if (pricePence === null) {
+    return interaction.reply({ content: "Enter a valid GBP price.", flags: 64 });
+  }
+
+  if (!Number.isFinite(stockQty) || stockQty < 0) {
+    return interaction.reply({ content: "Enter a valid stock quantity.", flags: 64 });
+  }
+
+  const created = await createProduct({
+    categoryId,
+    sku,
+    productName,
+    pricePence,
+    stockQty,
+  });
+
+  return interaction.reply({
+    content: `✅ Product created: **${created.product_name}** (${created.sku})`,
+    flags: 64,
+  });
+}
+
+if (customId.startsWith("staff_rename_product_modal:")) {
+  const [, sku] = customId.split(":");
+  const newName = interaction.fields.getTextInputValue("new_product_name")?.trim();
+
+  const updated = await renameProduct(sku, newName);
+  if (!updated) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.reply({
+    content: `✅ Product renamed to **${updated.product_name}**`,
+    flags: 64,
+  });
+}
+
+if (customId.startsWith("staff_edit_price_modal:")) {
+  const [, sku] = customId.split(":");
+  const priceGbp = interaction.fields.getTextInputValue("price_gbp")?.trim();
+  const pricePence = parsePriceToPence(priceGbp);
+
+  if (pricePence === null) {
+    return interaction.reply({ content: "Enter a valid GBP price.", flags: 64 });
+  }
+
+  const updated = await updateProductPrice(sku, pricePence);
+  if (!updated) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.reply({
+    content: `✅ Price updated for **${updated.product_name}** → ${money(updated.price_pence)}`,
+    flags: 64,
+  });
+}
+
+if (customId.startsWith("staff_stock_qty_modal:")) {
+  const [, sku] = customId.split(":");
+  const qtyRaw = interaction.fields.getTextInputValue("stock_qty")?.trim();
+  const qty = parseInt(qtyRaw, 10);
+
+  if (!Number.isFinite(qty) || qty < 0) {
+    return interaction.reply({ content: "Enter a valid stock quantity of 0 or more.", flags: 64 });
+  }
+
+  const updated = await updateProductStock(sku, qty);
+  if (!updated) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+  return interaction.reply({
+    content: `✅ Stock updated for **${updated.product_name}** (${updated.sku}) → ${updated.stock_qty}`,
+    flags: 64,
+  });
+}
+
+if (customId === "staff_orderlookup_modal") {
+  const orderIdRaw = interaction.fields.getTextInputValue("lookup_order_id")?.trim();
+  const orderId = parseInt(orderIdRaw, 10);
+
+  if (!Number.isFinite(orderId) || orderId <= 0) {
+    return interaction.reply({ content: "Enter a valid order ID.", flags: 64 });
+  }
+
+  const orderRes = await pool.query(`SELECT * FROM orders WHERE order_id=$1`, [orderId]);
+  if (!orderRes.rows.length) {
+    return interaction.reply({ content: "Order not found.", flags: 64 });
+  }
+
+  const order = orderRes.rows[0];
+
+  const itemsRes = await pool.query(
+    `SELECT name, qty, price_pence FROM order_items WHERE order_id=$1 ORDER BY id ASC`,
+    [orderId]
+  );
+
+  const itemLines = itemsRes.rows.map(
+    (it) => `• ${it.name} × ${it.qty} — ${money(it.qty * it.price_pence)}`
+  );
+
+  const embed = new EmbedBuilder()
+    .setTitle(`Order #${orderId}`)
+    .addFields(
+      { name: "Status", value: order.status || "unknown", inline: true },
+      { name: "Total", value: money(order.total_pence || 0), inline: true },
+      { name: "User ID", value: order.user_id || "unknown", inline: true },
+      { name: "Receipt Channel", value: order.receipt_channel_id ? `<#${order.receipt_channel_id}>` : "None" },
+      { name: "Items", value: itemLines.join("\n") || "_No items_" }
+    )
+    .setTimestamp(new Date(order.created_at));
+
+  return interaction.reply({
+    embeds: [embed],
+    flags: 64,
+  });
+}
+
+if (customId === "staff_create_discount_modal") {
+  const codeRaw = interaction.fields.getTextInputValue("discount_code")?.trim();
+  const percentRaw = interaction.fields.getTextInputValue("discount_percent")?.trim();
+
+  const code = normalizeDiscountCode(codeRaw);
+  const percent = parseInt(percentRaw, 10);
+
+  if (!code) {
+    return interaction.reply({ content: "Enter a valid code.", flags: 64 });
+  }
+
+  if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+    return interaction.reply({ content: "Enter a valid percent from 0 to 100.", flags: 64 });
+  }
+
+  await createDiscountCodeRecord(code, percent);
+
+  return interaction.reply({
+    content: `✅ Discount code **${code}** created or updated at ${percent}% and set active.`,
+    flags: 64,
+  });
+}
+
+if (customId === "staff_toggle_discount_modal") {
+  const codeRaw = interaction.fields.getTextInputValue("discount_code")?.trim();
+  const stateRaw = interaction.fields.getTextInputValue("discount_active")?.trim().toLowerCase();
+
+  const code = normalizeDiscountCode(codeRaw);
+
+  if (!code) {
+    return interaction.reply({ content: "Enter a valid code.", flags: 64 });
+  }
+
+  let active;
+  if (stateRaw === "active") active = true;
+  else if (stateRaw === "inactive") active = false;
+  else {
+    return interaction.reply({ content: "Type either active or inactive.", flags: 64 });
+  }
+
+  const updated = await setDiscountCodeActiveState(code, active);
+  if (!updated) {
+    return interaction.reply({ content: "That discount code was not found.", flags: 64 });
+  }
+
+  return interaction.reply({
+    content: `✅ Discount code **${updated.code}** is now **${updated.is_active ? "active" : "inactive"}**.`,
+    flags: 64,
+  });
+}
+
+if (customId.startsWith("staff_member_search_modal:")) {
+  const [, action] = customId.split(":");
+  const search = interaction.fields.getTextInputValue("member_search")?.trim();
+
+  if (!search) {
+    return interaction.reply({ content: "Enter a search term.", flags: 64 });
+  }
+
+  let options = {};
+  if (action === "add_verified") options.excludeVerified = true;
+  if (action === "remove_verified") options.verifiedOnly = true;
+
+  const matches = await searchGuildMembers(interaction.guild, search, options);
+
+  if (!matches.length) {
+    return interaction.reply({
+      content: "No matching members found.",
+      flags: 64,
+    });
+  }
+
+  return interaction.reply({
+    content: "Choose a member:",
+    components: [
+      new ActionRowBuilder().addComponents(
+        new StringSelectMenuBuilder()
+          .setCustomId(`staff_member_search_select:${action}`)
+          .setPlaceholder("Select a member…")
+          .addOptions(memberSelectOptions(matches))
+      )
+    ],
+    flags: 64,
+  });
+}
+
+if (customId.startsWith("staff_timeout_modal:")) {
+  const [, userId] = customId.split(":");
+  const targetMember = await ensureTargetMember(interaction.guild, userId);
+
+  if (!targetMember) {
+    return interaction.reply({ content: "Could not find that member.", flags: 64 });
+  }
+
+  const check = canActOnTarget(interaction.member, targetMember);
+  if (!check.ok) {
+    return interaction.reply({ content: check.reason, flags: 64 });
+  }
+
+  const minutesRaw = interaction.fields.getTextInputValue("timeout_minutes")?.trim();
+  const reasonRaw = interaction.fields.getTextInputValue("timeout_reason")?.trim();
+  const timeoutMs = timeoutMsFromMinutes(minutesRaw);
+
+  if (!timeoutMs) {
+    return interaction.reply({ content: "Enter a valid number of minutes.", flags: 64 });
+  }
+
+  const maxTimeoutMs = 28 * 24 * 60 * 60 * 1000;
+  if (timeoutMs > maxTimeoutMs) {
+    return interaction.reply({ content: "Timeout cannot exceed 28 days.", flags: 64 });
+  }
+
+  await targetMember.timeout(
+    timeoutMs,
+    reasonRaw || `Timed out by ${interaction.user.tag}`
+  );
+
+  return interaction.reply({
+    content: `✅ Timed out <@${targetMember.id}> for ${minutesRaw} minute(s).`,
+    flags: 64,
+  });
+}
+
+if (customId.startsWith("staff_ban_modal:")) {
+  const [, userId] = customId.split(":");
+  const targetMember = await ensureTargetMember(interaction.guild, userId);
+
+  if (!targetMember) {
+    return interaction.reply({ content: "Could not find that member.", flags: 64 });
+  }
+
+  const check = canActOnTarget(interaction.member, targetMember);
+  if (!check.ok) {
+    return interaction.reply({ content: check.reason, flags: 64 });
+  }
+
+  const reasonRaw = interaction.fields.getTextInputValue("ban_reason")?.trim();
+
+  await targetMember.ban({
+    reason: reasonRaw || `Banned by ${interaction.user.tag}`,
+  });
+
+  return interaction.reply({
+    content: `✅ Banned <@${targetMember.id}>`,
+    flags: 64,
+  });
+}
+
+if (customId === "staff_unban_modal") {
+  const userId = interaction.fields.getTextInputValue("unban_user_id")?.trim();
+  const reasonRaw = interaction.fields.getTextInputValue("unban_reason")?.trim();
+
+  if (!/^\d{16,20}$/.test(userId || "")) {
+    return interaction.reply({ content: "Enter a valid user ID.", flags: 64 });
+  }
+
+  const banRecord = await interaction.guild.bans.fetch(userId).catch(() => null);
+  if (!banRecord) {
+    return interaction.reply({ content: "That user is not currently banned.", flags: 64 });
+  }
+
+  await interaction.guild.members.unban(
+    userId,
+    reasonRaw || `Unbanned by ${interaction.user.tag}`
+  );
+
+  return interaction.reply({
+    content: `✅ Unbanned user ID \`${userId}\``,
+    flags: 64,
+  });
+}
