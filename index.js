@@ -2384,19 +2384,32 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(`✅ Verification panel posted in <#${VERIFY_CHANNEL_ID}>.`);
       }
 
-      if (interaction.commandName === "setupstaffpanel") {
-        await interaction.deferReply({ flags: 64 });
-        deferred = true;
+if (interaction.commandName === "setupstaffpanel") {
+  await interaction.deferReply({ flags: 64 });
+  deferred = true;
 
-        const staffChannel = await client.channels.fetch(STAFF_ONLY_CHANNEL_ID).catch(() => null);
-        if (!staffChannel) {
-          return interaction.editReply("❌ Could not find the staff-only channel. Check STAFF_ONLY_CHANNEL_ID.");
-        }
+  try {
+    const staffChannel = await client.channels.fetch(STAFF_ONLY_CHANNEL_ID).catch(() => null);
 
-        await staffChannel.send(staffMainPanel());
+    if (!staffChannel) {
+      return interaction.editReply("❌ Could not find the staff-only channel. Check STAFF_ONLY_CHANNEL_ID.");
+    }
 
-        return interaction.editReply(`✅ Staff panel posted in <#${STAFF_ONLY_CHANNEL_ID}>.`);
-      }
+    if (staffChannel.type !== ChannelType.GuildText) {
+      return interaction.editReply("❌ STAFF_ONLY_CHANNEL_ID is not a normal text channel.");
+    }
+
+    await staffChannel.send({
+      content: staffMainPanel().content,
+      components: staffMainPanel().components,
+    });
+
+    return interaction.editReply(`✅ Staff panel posted in <#${STAFF_ONLY_CHANNEL_ID}>.`);
+  } catch (err) {
+    console.error("setupstaffpanel error:", err);
+    return interaction.editReply(`❌ setupstaffpanel failed: ${err.message || "Unknown error"}`);
+  }
+}
 
       if (interaction.commandName === "setupproductrequests") {
         await interaction.deferReply({ flags: 64 });
