@@ -96,7 +96,7 @@ const SAFE_SEED_CATALOG = {
     { sku: "DRF002", name: "Logo T Shirt", price_pence: 2499, stock_qty: 20 },
     { sku: "DRF003", name: "Starter Bundle", price_pence: 5499, stock_qty: 8 },
   ],
-  "Accessories": [
+  Accessories: [
     { sku: "ACC001", name: "Sticker Pack", price_pence: 499, stock_qty: 50 },
     { sku: "ACC002", name: "Keyring", price_pence: 799, stock_qty: 30 },
     { sku: "ACC003", name: "Tote Bag", price_pence: 1299, stock_qty: 20 },
@@ -220,6 +220,26 @@ function bankDetailsText(orderId) {
     (extras.length ? `${extras.join("\n")}\n` : "") +
     `\n**Reference:** \`${ref}\``
   );
+}
+
+function staffActionRow(...buttons) {
+  return new ActionRowBuilder().addComponents(...buttons);
+}
+
+function staffBackRow(customId = "staff_panel_home", label = "Back to Staff Panel") {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(customId)
+        .setLabel(label)
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+function shopItemDescription(item) {
+  if (item.stock_qty <= 0) return truncate100(`${money(item.price_pence)} • Out of stock`);
+  return truncate100(`${money(item.price_pence)} • Stock ${item.stock_qty}`);
 }
 
 /* ------------------------- MODERATION HELPERS -------------------------- */
@@ -1219,7 +1239,7 @@ function staffReceiptControls(orderId, status = "pending") {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`staff_mark_paid:${orderId}`)
-        .setLabel("Mark as paid ✅")
+        .setLabel("Mark Paid")
         .setStyle(ButtonStyle.Success)
         .setDisabled(
           status === "paid" ||
@@ -1227,35 +1247,34 @@ function staffReceiptControls(orderId, status = "pending") {
           status === "cancelled" ||
           status === "completed"
         ),
-
       new ButtonBuilder()
         .setCustomId(`staff_mark_dispatched:${orderId}`)
-        .setLabel("Mark as dispatched 📦")
+        .setLabel("Mark Dispatched")
         .setStyle(ButtonStyle.Primary)
         .setDisabled(
           status === "dispatched" ||
           status === "cancelled" ||
           status === "completed"
         ),
-
-      new ButtonBuilder()
-        .setCustomId(`staff_cancel_order:${orderId}`)
-        .setLabel("Cancel Order ❌")
-        .setStyle(ButtonStyle.Danger)
-        .setDisabled(
-          status === "dispatched" ||
-          status === "cancelled" ||
-          status === "completed"
-        ),
-
       new ButtonBuilder()
         .setCustomId(`staff_complete_order:${orderId}`)
-        .setLabel("Complete & Close ✅")
+        .setLabel("Complete")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(
           status === "cancelled" ||
           status === "completed" ||
           status !== "dispatched"
+        )
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`staff_cancel_order:${orderId}`)
+        .setLabel("Cancel Order")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(
+          status === "dispatched" ||
+          status === "cancelled" ||
+          status === "completed"
         )
     ),
   ];
@@ -1309,9 +1328,9 @@ async function itemSelectComponents(categoryId) {
   const items = (await getProductsByCategoryId(categoryId)).slice(0, 25);
 
   const options = items.map((it) => ({
-    label: truncate100(`${it.product_name} — ${money(it.price_pence)} — Stock ${it.stock_qty}`),
+    label: truncate100(it.product_name),
     value: truncate100(it.sku),
-    description: truncate100(it.stock_qty > 0 ? `Available: ${it.stock_qty}` : "Out of stock"),
+    description: shopItemDescription(it),
   }));
 
   if (!options.length) {
@@ -1420,7 +1439,7 @@ function cartActionsComponents(disableSubmit = false) {
         .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId("cart_submit")
-        .setLabel("Submit Order ✅")
+        .setLabel("Submit Order")
         .setStyle(ButtonStyle.Success)
         .setDisabled(disableSubmit),
       new ButtonBuilder()
@@ -1473,7 +1492,7 @@ function verifyApproveComponents(userId) {
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId(`verify_approve:${userId}`)
-        .setLabel("Approve ✅")
+        .setLabel("Approve")
         .setStyle(ButtonStyle.Success)
     ),
   ];
@@ -1482,17 +1501,32 @@ function verifyApproveComponents(userId) {
 function staffPanelComponents() {
   const embed = new EmbedBuilder()
     .setTitle("Staff Control Panel")
+    .setDescription(
+      [
+        "**Shop Management**",
+        "Stock, orders, discounts, categories and products",
+        "",
+        "**Moderation**",
+        "Verification, timeout, kick and ban tools",
+        "",
+        "Colours now follow one rule:",
+        "Blue = standard action",
+        "Grey = secondary or back",
+        "Green = positive action",
+        "Red = destructive action",
+      ].join("\n")
+    )
     .setColor(0x2b2d31);
 
-  const row1 = new ActionRowBuilder().addComponents(
+  const row1 = staffActionRow(
     new ButtonBuilder()
       .setCustomId("staff_open_stock_flow")
-      .setLabel("Adjust Stock")
+      .setLabel("Stock")
       .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("staff_open_orderlookup_modal")
-      .setLabel("Lookup Order")
-      .setStyle(ButtonStyle.Secondary),
+      .setLabel("Orders")
+      .setStyle(ButtonStyle.Primary),
     new ButtonBuilder()
       .setCustomId("staff_open_create_discount_modal")
       .setLabel("Create Discount")
@@ -1503,7 +1537,7 @@ function staffPanelComponents() {
       .setStyle(ButtonStyle.Secondary)
   );
 
-  const row2 = new ActionRowBuilder().addComponents(
+  const row2 = staffActionRow(
     new ButtonBuilder()
       .setCustomId("staff_open_add_category_modal")
       .setLabel("Add Category")
@@ -1518,7 +1552,7 @@ function staffPanelComponents() {
       .setStyle(ButtonStyle.Danger)
   );
 
-  const row3 = new ActionRowBuilder().addComponents(
+  const row3 = staffActionRow(
     new ButtonBuilder()
       .setCustomId("staff_open_add_product_flow")
       .setLabel("Add Product")
@@ -1533,46 +1567,60 @@ function staffPanelComponents() {
       .setStyle(ButtonStyle.Danger)
   );
 
-  const row4 = new ActionRowBuilder().addComponents(
+  const row4 = staffActionRow(
     new ButtonBuilder()
-      .setCustomId("staff_mod_add_verified")
-      .setLabel("Add Verified")
-      .setStyle(ButtonStyle.Success),
-    new ButtonBuilder()
-      .setCustomId("staff_mod_remove_verified")
-      .setLabel("Remove Verified")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("staff_mod_timeout")
-      .setLabel("Timeout")
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId("staff_mod_untimeout")
-      .setLabel("Remove Timeout")
-      .setStyle(ButtonStyle.Secondary)
+      .setCustomId("staff_open_mod_panel")
+      .setLabel("Moderation Panel")
+      .setStyle(ButtonStyle.Primary)
   );
 
-  const row5 = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("staff_mod_kick")
-      .setLabel("Kick")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("staff_mod_ban")
-      .setLabel("Ban")
-      .setStyle(ButtonStyle.Danger),
-    new ButtonBuilder()
-      .setCustomId("staff_mod_unban")
-      .setLabel("Unban")
-      .setStyle(ButtonStyle.Secondary)
-  );
+  return { embed, rows: [row1, row2, row3, row4] };
+}
 
-  return { embed, rows: [row1, row2, row3, row4, row5] };
+function moderationPanelComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("staff_mod_add_verified")
+        .setLabel("Add Verified")
+        .setStyle(ButtonStyle.Success),
+      new ButtonBuilder()
+        .setCustomId("staff_mod_remove_verified")
+        .setLabel("Remove Verified")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId("staff_mod_timeout")
+        .setLabel("Timeout")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("staff_mod_untimeout")
+        .setLabel("Remove Timeout")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("staff_mod_kick")
+        .setLabel("Kick")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId("staff_mod_ban")
+        .setLabel("Ban")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId("staff_mod_unban")
+        .setLabel("Unban")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("staff_panel_home")
+        .setLabel("Back to Main Panel")
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
 }
 
 /* ------------------------------- STAFF UI -------------------------------- */
 
-async function staffCategorySelect(customId, placeholder = "Choose a category…") {
+async function staffCategorySelect(customId, placeholder = "Choose a category…", includeBack = true) {
   const categories = await getCategories();
 
   if (!categories.length) {
@@ -1584,6 +1632,7 @@ async function staffCategorySelect(customId, placeholder = "Choose a category…
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true)
       ),
+      ...(includeBack ? staffBackRow() : []),
     ];
   }
 
@@ -1599,10 +1648,11 @@ async function staffCategorySelect(customId, placeholder = "Choose a category…
           }))
         )
     ),
+    ...(includeBack ? staffBackRow() : []),
   ];
 }
 
-async function staffProductSelectByCategory(customId, categoryId, placeholder = "Choose a product…") {
+async function staffProductSelectByCategory(customId, categoryId, placeholder = "Choose a product…", includeBack = true) {
   const products = await getProductsByCategoryId(categoryId);
 
   if (!products.length) {
@@ -1614,6 +1664,7 @@ async function staffProductSelectByCategory(customId, categoryId, placeholder = 
           .setStyle(ButtonStyle.Secondary)
           .setDisabled(true)
       ),
+      ...(includeBack ? staffBackRow() : []),
     ];
   }
 
@@ -1625,11 +1676,12 @@ async function staffProductSelectByCategory(customId, categoryId, placeholder = 
         .addOptions(
           products.slice(0, 25).map((p) => ({
             label: truncate100(p.product_name),
-            description: truncate100(`SKU: ${p.sku}`),
+            description: truncate100(`${money(p.price_pence)} • SKU ${p.sku}`),
             value: truncate100(p.sku),
           }))
         )
     ),
+    ...(includeBack ? staffBackRow() : []),
   ];
 }
 
@@ -1643,21 +1695,21 @@ function staffEditProductActionComponents(categoryId, sku) {
       new ButtonBuilder()
         .setCustomId(`staff_open_price_modal:${sku}`)
         .setLabel("Change Price")
-        .setStyle(ButtonStyle.Secondary),
+        .setStyle(ButtonStyle.Primary),
       new ButtonBuilder()
         .setCustomId(`staff_open_stock_modal_direct:${sku}`)
         .setLabel("Change Stock")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId(`staff_open_move_product_flow:${sku}`)
-        .setLabel("Move")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId(`staff_delete_product_confirm:${sku}`)
-        .setLabel("Delete")
-        .setStyle(ButtonStyle.Danger)
+        .setStyle(ButtonStyle.Primary)
     ),
     new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`staff_open_move_product_flow:${sku}`)
+        .setLabel("Move Product")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId(`staff_delete_product_confirm:${sku}`)
+        .setLabel("Delete Product")
+        .setStyle(ButtonStyle.Danger),
       new ButtonBuilder()
         .setCustomId(`staff_back_edit_products:${categoryId}`)
         .setLabel("Back")
@@ -1982,9 +2034,7 @@ function staffMemberSearchModal(action, title = "Find Member") {
     .setRequired(true)
     .setPlaceholder("Example: james");
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(searchInput)
-  );
+  modal.addComponents(new ActionRowBuilder().addComponents(searchInput));
 
   return modal;
 }
@@ -2028,9 +2078,7 @@ function staffBanModal(userId, label) {
     .setRequired(false)
     .setPlaceholder("Optional");
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(reasonInput)
-  );
+  modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
 
   return modal;
 }
@@ -2428,6 +2476,30 @@ client.on("interactionCreate", async (interaction) => {
 
       /* --------------------------- STAFF BUTTONS --------------------------- */
 
+      if (customId === "staff_panel_home") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        const { embed, rows } = staffPanelComponents();
+
+        return interaction.reply({
+          embeds: [embed],
+          components: rows,
+          flags: 64,
+        });
+      }
+
+      if (customId === "staff_open_mod_panel") {
+        if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
+        if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
+
+        return interaction.reply({
+          content: "**Moderation Panel**\nChoose an action below:",
+          components: moderationPanelComponents(),
+          flags: 64,
+        });
+      }
+
       if (customId === "staff_open_stock_flow") {
         if (!isStaff(interaction.member)) return interaction.reply({ content: "Staff only.", flags: 64 });
         if (!isStaffChannel(interaction)) return interaction.reply({ content: "Use this in the staff-only channel.", flags: 64 });
@@ -2590,7 +2662,11 @@ client.on("interactionCreate", async (interaction) => {
               new ButtonBuilder()
                 .setCustomId("staff_restock_all_execute")
                 .setLabel("Yes, restock all")
-                .setStyle(ButtonStyle.Danger)
+                .setStyle(ButtonStyle.Danger),
+              new ButtonBuilder()
+                .setCustomId("staff_panel_home")
+                .setLabel("Back")
+                .setStyle(ButtonStyle.Secondary)
             ),
           ],
           flags: 64,
@@ -3116,7 +3192,7 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    /* -------------------------- STRING SELECT MENUS ------------------------- */
+      /* -------------------------- STRING SELECT MENUS ------------------------- */
 
     if (interaction.isStringSelectMenu()) {
       const { customId } = interaction;
