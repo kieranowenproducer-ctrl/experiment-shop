@@ -3499,32 +3499,6 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
           });
         }
 
-        if (customId.startsWith("staff_member_browser_select:")) {
-  await interaction.deferUpdate();
-
-  const [, , view, pageRaw] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
-  const targetUserId = interaction.values[0];
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-  if (!targetMember) {
-    await interaction.message.edit({
-      content: "Could not find that member.",
-      embeds: [],
-      components: staffModerationPanel().components,
-    });
-    return;
-  }
-
-  await interaction.message.edit({
-    content: `Viewing member from ${memberBrowserTitle(view).toLowerCase()}:`,
-    embeds: [buildMemberDetailEmbed(targetMember, view, page)],
-    components: buildMemberDetailComponents(targetMember, view, page),
-  });
-
-  return;
-}
-
         const check = canActOnTarget(interaction.member, targetMember);
         if (!check.ok) {
           return interaction.update({
@@ -3592,6 +3566,112 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
           );
         }
       }
+
+      if (customId.startsWith("staff_member_search_select:")) {
+  const [, action] = customId.split(":");
+  const targetUserId = interaction.values[0];
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+  if (!targetMember) {
+    return interaction.update({
+      content: "Could not find that member.",
+      components: staffModerationPanel().components,
+    });
+  }
+
+  const check = canActOnTarget(interaction.member, targetMember);
+  if (!check.ok) {
+    return interaction.update({
+      content: check.reason,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "add_verified") {
+    if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+      return interaction.update({
+        content: "That member already has the verified role.",
+        components: staffModerationPanel().components,
+      });
+    }
+
+    await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
+
+    return interaction.update({
+      content: `✅ Added verified role to <@${targetMember.id}>`,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "remove_verified") {
+    if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+      return interaction.update({
+        content: "That member does not currently have the verified role.",
+        components: staffModerationPanel().components,
+      });
+    }
+
+    await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+
+    return interaction.update({
+      content: `✅ Removed verified role from <@${targetMember.id}>`,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "timeout") {
+    return interaction.showModal(
+      staffTimeoutModal(
+        targetMember.id,
+        targetMember.displayName || targetMember.user.username
+      )
+    );
+  }
+
+  if (action === "kick") {
+    await targetMember.kick(`Kicked by ${interaction.user.tag}`);
+
+    return interaction.update({
+      content: `✅ Kicked <@${targetMember.id}>`,
+      components: staffModerationPanel().components,
+    });
+  }
+
+  if (action === "ban") {
+    return interaction.showModal(
+      staffBanModal(
+        targetMember.id,
+        targetMember.displayName || targetMember.user.username
+      )
+    );
+  }
+}
+
+if (customId.startsWith("staff_member_browser_select:")) {
+  await interaction.deferUpdate();
+
+  const [, , view, pageRaw] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
+  const targetUserId = interaction.values[0];
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+  if (!targetMember) {
+    await interaction.message.edit({
+      content: "Could not find that member.",
+      embeds: [],
+      components: staffModerationPanel().components,
+    });
+    return;
+  }
+
+  await interaction.message.edit({
+    content: `Viewing member from ${memberBrowserTitle(view).toLowerCase()}:`,
+    embeds: [buildMemberDetailEmbed(targetMember, view, page)],
+    components: buildMemberDetailComponents(targetMember, view, page),
+  });
+
+  return;
+}
 
       /* ------------------------------ SHOP MENUS ----------------------------- */
 
