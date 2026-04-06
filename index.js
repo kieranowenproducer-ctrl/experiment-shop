@@ -2632,6 +2632,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (customId === "staff_browse_all_members") {
+        await interaction.deferUpdate();
         const members = await getFilteredGuildMembers(interaction.guild, "all");
         const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
 
@@ -2643,6 +2644,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (customId === "staff_browse_verified_members") {
+        await interaction.deferUpdate();
         const members = await getFilteredGuildMembers(interaction.guild, "verified");
         const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
 
@@ -2654,6 +2656,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (customId === "staff_browse_unverified_members") {
+        await interaction.deferUpdate();
         const members = await getFilteredGuildMembers(interaction.guild, "unverified");
         const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
 
