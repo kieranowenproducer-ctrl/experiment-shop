@@ -1029,6 +1029,173 @@ async function itemSelectComponents(categoryId) {
   ];
 }
 
+function cartActionsComponents(disableSubmit = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("browse_categories")
+        .setLabel("Browse Categories")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("cart_discount")
+        .setLabel("Apply Discount Code")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("cart_submit")
+        .setLabel("Submit Order")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(disableSubmit),
+      new ButtonBuilder()
+        .setCustomId("cart_clear")
+        .setLabel("Clear Cart")
+        .setStyle(ButtonStyle.Danger)
+    ),
+  ];
+}
+
+function menuMessageComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("open_menu")
+        .setLabel("Click to see our menu")
+        .setStyle(ButtonStyle.Primary)
+    ),
+  ];
+}
+
+function verifyPanelComponents() {
+  const embed = new EmbedBuilder()
+    .setTitle("Server Verification")
+    .setDescription(
+      [
+        "To access the full server, click the button below and complete the form.",
+        "",
+        "All fields are required:",
+        "• Full name",
+        "• How you heard about us",
+        "• Referral / who sent you",
+        "• Email address",
+        "• Phone number",
+      ].join("\n")
+    );
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("verify_open_modal")
+      .setLabel("Verify")
+      .setStyle(ButtonStyle.Success)
+  );
+
+  return { embed, row };
+}
+
+function verifyApproveComponents(userId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`verify_approve:${userId}`)
+        .setLabel("Approve")
+        .setStyle(ButtonStyle.Success)
+    ),
+  ];
+}
+
+async function staffCategorySelect(
+  customId,
+  placeholder = "Choose a category…",
+  backId = "staff_panel_home",
+  backLabel = "Back"
+) {
+  const categories = await getCategories();
+
+  if (!categories.length) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_noop")
+          .setLabel("No categories available")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(backId)
+          .setLabel(backLabel)
+          .setStyle(ButtonStyle.Secondary)
+      ),
+    ];
+  }
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(customId)
+        .setPlaceholder(placeholder)
+        .addOptions(
+          categories.slice(0, 25).map((cat) => ({
+            label: truncate100(cat.category_name),
+            value: String(cat.category_id),
+          }))
+        )
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(backId)
+        .setLabel(backLabel)
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+async function staffProductSelectByCategory(
+  customId,
+  categoryId,
+  placeholder = "Choose a product…",
+  backId = "staff_panel_home",
+  backLabel = "Back"
+) {
+  const products = await getProductsByCategoryId(categoryId);
+
+  if (!products.length) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_noop")
+          .setLabel("No products in this category")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(backId)
+          .setLabel(backLabel)
+          .setStyle(ButtonStyle.Secondary)
+      ),
+    ];
+  }
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(customId)
+        .setPlaceholder(placeholder)
+        .addOptions(
+          products.slice(0, 25).map((p) => ({
+            label: truncate100(p.product_name),
+            description: truncate100(`${money(p.price_pence)} • SKU ${p.sku}`),
+            value: truncate100(p.sku),
+          }))
+        )
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(backId)
+        .setLabel(backLabel)
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
 /* ------------------------------ STAFF PANEL ------------------------------ */
 
 function navRow() {
