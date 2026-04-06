@@ -62,6 +62,9 @@ const SHIPPING_USA_PENCE = Number(process.env.SHIPPING_USA_PENCE || 4500);
 const SUBMIT_LOCK_MS = 15000;
 const SHOP_SESSION_TIMEOUT_MS = 5 * 60 * 1000;
 const MEMBER_BROWSER_PAGE_SIZE = 10;
+const MEMBER_BROWSER_CACHE_MS = 60 * 1000;
+const MEMBER_SEARCH_LIMIT = 25;
+const MEMBER_BROWSER_FETCH_LIMIT = 1000;
 
 function requireEnv(name, value) {
   if (!value) throw new Error(`Missing required env var: ${name}`);
@@ -113,6 +116,7 @@ const SUBMIT_LOCKS = new Map();
 const CART_UI_MESSAGES = new Map();
 const SHOP_SESSION_CHANNELS = new Map();
 const SHOP_SESSION_TIMEOUTS = new Map();
+const MEMBER_BROWSER_CACHE = new Map();
 
 /* -------------------------------- HELPERS ------------------------------- */
 
@@ -234,8 +238,6 @@ function shopItemDescription(item) {
   return truncate100(`${money(item.price_pence)} • Stock ${item.stock_qty}`);
 }
 
-/* -------------------------- MODERATION HELPERS -------------------------- */
-
 function memberSearchMatches(member, search) {
   const needle = String(search || "").trim().toLowerCase();
   if (!needle) return false;
@@ -253,12 +255,64 @@ function memberSearchMatches(member, search) {
   );
 }
 
+function getMemberBrowserCacheKey(guildId, view) {
+  return `${guildId}:${view}`;
+}
+
+function clearMemberBrowserCache(guildId) {
+  if (!guildId) {
+    MEMBER_BROWSER_CACHE.clear();
+    return;
+  }
+
+  for (const key of MEMBER_BROWSER_CACHE.keys()) {
+    if (key.startsWith(`${guildId}:`)) {
+      MEMBER_BROWSER_CACHE.delete(key);
+    }
+  }
+}
+
+async function warmMemberCache(guild) {
+  try {
+    if (guild.members.cache.size >= MEMBER_BROWSER_FETCH_LIMIT) return;
+    await guild.members.fetch({ limit: MEMBER_BROWSER_FETCH_LIMIT }).catch(() => null);
+  } catch {
+    // ignore cache warm failures
+  }
+}
+
+/* -------------------------- MODERATION HELPERS -------------------------- */
+
 async function searchGuildMembers(guild, search, options = {}) {
   const { verifiedOnly = false, excludeVerified = false } = options;
+  const needle = String(search || "").trim();
+  if (!needle) return [];
 
-  await guild.members.fetch();
+  await warmMemberCache(guild);
 
-  return guild.members.cache
+  const collected = new Map();
+
+  try {
+    const searched = await guild.members.search({
+      query: needle.slice(0, 32),
+      limit: MEMBER_SEARCH_LIMIT,
+      cache: true,
+    });
+
+    for (const member of searched.values()) {
+      collected.set(member.id, member);
+    }
+  } catch {
+    // fall back to cache only
+  }
+
+  for (const member of guild.members.cache.values()) {
+    if (memberSearchMatches(member, needle)) {
+      collected.set(member.id, member);
+    }
+  }
+
+  return Array.from(collected.values())
     .filter((member) => {
       if (!member || member.user?.bot) return false;
 
@@ -266,9 +320,14 @@ async function searchGuildMembers(guild, search, options = {}) {
       if (verifiedOnly && !verified) return false;
       if (excludeVerified && verified) return false;
 
-      return memberSearchMatches(member, search);
+      return memberSearchMatches(member, needle);
     })
-    .first(25);
+    .sort((a, b) => {
+      const aName = String(a.displayName || a.user.username || "").toLowerCase();
+      const bName = String(b.displayName || b.user.username || "").toLowerCase();
+      return aName.localeCompare(bName);
+    })
+    .slice(0, MEMBER_SEARCH_LIMIT);
 }
 
 function memberSelectOptions(members) {
@@ -282,6 +341,8 @@ function memberSelectOptions(members) {
 }
 
 async function ensureTargetMember(guild, userId) {
+  const cached = guild.members.cache.get(userId);
+  if (cached) return cached;
   return guild.members.fetch(userId).catch(() => null);
 }
 
@@ -316,8 +377,15 @@ function canActOnTarget(staffMember, targetMember) {
   return { ok: true };
 }
 
-async function getFilteredGuildMembers(guild, view = "all") {
-  await guild.members.fetch();
+async function getFilteredGuildMembers(guild, view = "all", forceRefresh = false) {
+  const cacheKey = getMemberBrowserCacheKey(guild.id, view);
+  const cached = MEMBER_BROWSER_CACHE.get(cacheKey);
+
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+    return cached.members;
+  }
+
+  await warmMemberCache(guild);
 
   let members = guild.members.cache.filter((member) => member && !member.user?.bot);
 
@@ -329,11 +397,18 @@ async function getFilteredGuildMembers(guild, view = "all") {
     members = members.filter((member) => !isVerifiedMember(member));
   }
 
-  return Array.from(members.values()).sort((a, b) => {
+  const result = Array.from(members.values()).sort((a, b) => {
     const aName = String(a.displayName || a.user.username || "").toLowerCase();
     const bName = String(b.displayName || b.user.username || "").toLowerCase();
     return aName.localeCompare(bName);
   });
+
+  MEMBER_BROWSER_CACHE.set(cacheKey, {
+    members: result,
+    expiresAt: Date.now() + MEMBER_BROWSER_CACHE_MS,
+  });
+
+  return result;
 }
 
 function memberBrowserTitle(view) {
@@ -894,10 +969,11 @@ async function updateProductStock(sku, stockQty) {
 
   await pool.query(
     `
-    UPDATE stock_items
-    SET stock_qty = $2,
+    INSERT INTO stock_items (sku, stock_qty, updated_at)
+    VALUES ($1, $2, NOW())
+    ON CONFLICT (sku) DO UPDATE
+    SET stock_qty = EXCLUDED.stock_qty,
         updated_at = NOW()
-    WHERE sku = $1
     `,
     [sku, stockQty]
   );
@@ -1106,7 +1182,7 @@ async function createProductRequestRecord(userId, username, requestedProduct, ex
   return res.rows[0];
 }
 
-/* ------------------------------- CART HELPERS -------------------------- */
+/* ------------------------------- CART HELPERS --------------------------- */
 
 async function getStockForSku(sku) {
   const res = await pool.query(`SELECT stock_qty FROM stock_items WHERE sku=$1`, [sku]);
@@ -1348,7 +1424,7 @@ async function buildCartMessage(userId, heading = "✅ **Added to basket.**") {
   return content;
 }
 
-/* ------------------------------- RECEIPTS ------------------------------ */
+/* ------------------------------- RECEIPTS ------------------------------- */
 
 async function createReceiptChannel(guild, user, orderId) {
   const category = await guild.channels.fetch(ORDERS_CATEGORY_ID).catch(() => null);
@@ -1362,7 +1438,10 @@ async function createReceiptChannel(guild, user, orderId) {
       { id: guild.roles.everyone.id, deny: ["ViewChannel"] },
       { id: user.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
       { id: STAFF_ROLE_ID, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
-      { id: guild.members.me.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory", "ManageChannels"] },
+      {
+        id: guild.members.me.id,
+        allow: ["ViewChannel", "SendMessages", "ReadMessageHistory", "ManageChannels"],
+      },
     ],
   });
 
@@ -1474,7 +1553,7 @@ function staffReceiptControls(orderId, status = "pending") {
   ];
 }
 
-/* -------------------------------- MODALS ------------------------------- */
+/* -------------------------------- MODALS -------------------------------- */
 
 function shippingModal() {
   const modal = new ModalBuilder()
@@ -2087,8 +2166,6 @@ async function staffProductSelectByCategory(
   ];
 }
 
-/* ------------------------------ STAFF PANELS ---------------------------- */
-
 function navRow() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder()
@@ -2326,7 +2403,10 @@ async function createOrGetShopSessionChannel(guild, user) {
       { id: guild.roles.everyone.id, deny: ["ViewChannel"] },
       { id: user.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
       { id: STAFF_ROLE_ID, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
-      { id: guild.members.me.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory", "ManageChannels"] },
+      {
+        id: guild.members.me.id,
+        allow: ["ViewChannel", "SendMessages", "ReadMessageHistory", "ManageChannels"],
+      },
     ],
   });
 
@@ -2429,7 +2509,7 @@ async function registerCommands() {
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
 }
 
-/* ------------------------------- DISCORD ------------------------------- */
+/* ------------------------------- DISCORD -------------------------------- */
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
@@ -2548,7 +2628,7 @@ client.on("interactionCreate", async (interaction) => {
       }
     }
 
-    /* ------------------------------ BUTTONS ----------------------------- */
+    /* ------------------------------- BUTTONS ------------------------------ */
 
     if (interaction.isButton()) {
       const { customId } = interaction;
@@ -2598,6 +2678,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         await member.roles.add(VERIFIED_ROLE_ID, `Approved by ${interaction.user.tag}`);
+        clearMemberBrowserCache(guild.id);
 
         await interaction.update({
           content: `✅ Verified <@${targetUserId}> by <@${interaction.user.id}>`,
@@ -2769,53 +2850,56 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
-if (
-  customId.startsWith("staff_member_browser_prev:") ||
-  customId.startsWith("staff_member_browser_next:") ||
-  customId.startsWith("staff_member_browser_refresh:")
-) {
-  await interaction.deferUpdate();
+      if (
+        customId.startsWith("staff_member_browser_prev:") ||
+        customId.startsWith("staff_member_browser_next:") ||
+        customId.startsWith("staff_member_browser_refresh:")
+      ) {
+        await interaction.deferUpdate();
 
-  const [view, pageRaw] = customId.split(":").slice(1);
-  const currentPage = parseInt(pageRaw, 10) || 0;
+        const [view, pageRaw] = customId.split(":").slice(1);
+        const currentPage = parseInt(pageRaw, 10) || 0;
+        let newPage = currentPage;
 
-  let newPage = currentPage;
+        if (customId.startsWith("staff_member_browser_prev:")) {
+          newPage = Math.max(0, currentPage - 1);
+        }
 
-  if (customId.startsWith("staff_member_browser_prev:")) {
-    newPage = Math.max(0, currentPage - 1);
-  }
+        if (customId.startsWith("staff_member_browser_next:")) {
+          const membersForCount = await getFilteredGuildMembers(interaction.guild, view);
+          const totalPages = Math.max(1, Math.ceil(membersForCount.length / MEMBER_BROWSER_PAGE_SIZE));
+          newPage = Math.min(totalPages - 1, currentPage + 1);
 
-  if (customId.startsWith("staff_member_browser_next:")) {
-    const membersForCount = await getFilteredGuildMembers(interaction.guild, view);
-    const totalPages = Math.max(1, Math.ceil(membersForCount.length / MEMBER_BROWSER_PAGE_SIZE));
-    newPage = Math.min(totalPages - 1, currentPage + 1);
+          await interaction.message.edit({
+            content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+            embeds: [buildMemberBrowserEmbed(membersForCount, view, newPage)],
+            components: buildMemberBrowserComponents(membersForCount, view, newPage),
+          });
 
-    await interaction.message.edit({
-      content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-      embeds: [buildMemberBrowserEmbed(membersForCount, view, newPage)],
-      components: buildMemberBrowserComponents(membersForCount, view, newPage),
-    });
+          return;
+        }
 
-    return;
-  }
+        const members = await getFilteredGuildMembers(
+          interaction.guild,
+          view,
+          customId.startsWith("staff_member_browser_refresh:")
+        );
 
-  const members = await getFilteredGuildMembers(interaction.guild, view);
+        await interaction.message.edit({
+          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+          embeds: [buildMemberBrowserEmbed(members, view, newPage)],
+          components: buildMemberBrowserComponents(members, view, newPage),
+        });
 
-  await interaction.message.edit({
-    content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-    embeds: [buildMemberBrowserEmbed(members, view, newPage)],
-    components: buildMemberBrowserComponents(members, view, newPage),
-  });
+        return;
+      }
 
-  return;
-}
+      if (customId.startsWith("staff_member_apply_verify:")) {
+        await interaction.deferUpdate();
 
-if (customId.startsWith("staff_member_apply_verify:")) {
-  await interaction.deferUpdate();
-
-  const [, view, pageRaw, targetUserId] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+        const [, view, pageRaw, targetUserId] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
         if (!targetMember) {
           await interaction.message.edit({
@@ -2838,6 +2922,7 @@ if (customId.startsWith("staff_member_apply_verify:")) {
 
         if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
           await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
+          clearMemberBrowserCache(interaction.guild.id);
         }
 
         const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
@@ -2851,12 +2936,12 @@ if (customId.startsWith("staff_member_apply_verify:")) {
         return;
       }
 
-if (customId.startsWith("staff_member_apply_unverify:")) {
-  await interaction.deferUpdate();
+      if (customId.startsWith("staff_member_apply_unverify:")) {
+        await interaction.deferUpdate();
 
-  const [, view, pageRaw, targetUserId] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+        const [, view, pageRaw, targetUserId] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
         if (!targetMember) {
           await interaction.message.edit({
@@ -2879,6 +2964,7 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
 
         if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
           await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+          clearMemberBrowserCache(interaction.guild.id);
         }
 
         const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
@@ -3205,7 +3291,7 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
         }
       }
 
-      /* ------------------------- ORDER ACTIONS -------------------------- */
+      /* ---------------------------- ORDER ACTIONS ------------------------- */
 
       if (customId.startsWith("staff_mark_paid:")) {
         const [, orderIdStr] = customId.split(":");
@@ -3420,13 +3506,13 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
 
       /* ----------------------- STAFF MEMBER BROWSER ----------------------- */
 
-if (customId.startsWith("staff_member_browser_select:")) {
-  await interaction.deferUpdate();
+      if (customId.startsWith("staff_member_browser_select:")) {
+        await interaction.deferUpdate();
 
-  const [, view, pageRaw] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
-  const targetUserId = interaction.values[0];
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+        const [, view, pageRaw] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetUserId = interaction.values[0];
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
         if (!targetMember) {
           await interaction.message.edit({
@@ -3648,6 +3734,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
           }
 
           await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
+          clearMemberBrowserCache(interaction.guild.id);
 
           return interaction.update({
             content: `✅ Added verified role to <@${targetMember.id}>`,
@@ -3664,6 +3751,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
           }
 
           await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+          clearMemberBrowserCache(interaction.guild.id);
 
           return interaction.update({
             content: `✅ Removed verified role from <@${targetMember.id}>`,
@@ -3679,6 +3767,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
 
         if (action === "kick") {
           await targetMember.kick(`Kicked by ${interaction.user.tag}`);
+          clearMemberBrowserCache(interaction.guild.id);
 
           return interaction.update({
             content: `✅ Kicked <@${targetMember.id}>`,
@@ -4209,6 +4298,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
         }
 
         await targetMember.timeout(timeoutMs, reasonRaw || `Timed out by ${interaction.user.tag}`);
+        clearMemberBrowserCache(interaction.guild.id);
 
         return interaction.reply({
           content: `✅ Timed out <@${targetMember.id}> for ${minutesRaw} minute(s).`,
@@ -4234,6 +4324,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
         await targetMember.ban({
           reason: reasonRaw || `Banned by ${interaction.user.tag}`,
         });
+        clearMemberBrowserCache(interaction.guild.id);
 
         return interaction.reply({
           content: `✅ Banned <@${targetMember.id}>`,
@@ -4338,7 +4429,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
   }
 });
 
-/* ------------------------------- STARTUP ------------------------------- */
+/* -------------------------------- STARTUP ------------------------------- */
 
 client.once("clientReady", () => {
   console.log("✅ Logged in as", client.user.tag);
