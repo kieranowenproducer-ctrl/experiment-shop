@@ -2631,41 +2631,44 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.showModal(staffMemberSearchModal("ban", "Find Member To Ban"));
       }
 
-      if (customId === "staff_browse_all_members") {
-        await interaction.deferUpdate();
-        const members = await getFilteredGuildMembers(interaction.guild, "all");
-        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+if (customId === "staff_browse_all_members") {
+  await interaction.deferUpdate();
 
-        return interaction.update({
-          content: "Browsing all members:",
-          embeds: [buildMemberBrowserEmbed(members, "all", 0)],
-          components: buildMemberBrowserComponents("all", 0, totalPages),
-        });
-      }
+  const members = await getFilteredGuildMembers(interaction.guild, "all");
+  const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
 
-      if (customId === "staff_browse_verified_members") {
-        await interaction.deferUpdate();
-        const members = await getFilteredGuildMembers(interaction.guild, "verified");
-        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+  return interaction.editReply({
+    content: "Browsing all members:",
+    embeds: [buildMemberBrowserEmbed(members, "all", 0)],
+    components: buildMemberBrowserComponents("all", 0, totalPages),
+  });
+}
 
-        return interaction.update({
-          content: "Browsing verified members:",
-          embeds: [buildMemberBrowserEmbed(members, "verified", 0)],
-          components: buildMemberBrowserComponents("verified", 0, totalPages),
-        });
-      }
+if (customId === "staff_browse_verified_members") {
+  await interaction.deferUpdate();
 
-      if (customId === "staff_browse_unverified_members") {
-        await interaction.deferUpdate();
-        const members = await getFilteredGuildMembers(interaction.guild, "unverified");
-        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+  const members = await getFilteredGuildMembers(interaction.guild, "verified");
+  const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
 
-        return interaction.update({
-          content: "Browsing unverified members:",
-          embeds: [buildMemberBrowserEmbed(members, "unverified", 0)],
-          components: buildMemberBrowserComponents("unverified", 0, totalPages),
-        });
-      }
+  return interaction.editReply({
+    content: "Browsing verified members:",
+    embeds: [buildMemberBrowserEmbed(members, "verified", 0)],
+    components: buildMemberBrowserComponents("verified", 0, totalPages),
+  });
+}
+
+if (customId === "staff_browse_unverified_members") {
+  await interaction.deferUpdate();
+
+  const members = await getFilteredGuildMembers(interaction.guild, "unverified");
+  const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+
+  return interaction.editReply({
+    content: "Browsing unverified members:",
+    embeds: [buildMemberBrowserEmbed(members, "unverified", 0)],
+    components: buildMemberBrowserComponents("unverified", 0, totalPages),
+  });
+}
 
       if (customId.startsWith("staff_member_browser:")) {
         const [, view, pageRaw] = customId.split(":");
