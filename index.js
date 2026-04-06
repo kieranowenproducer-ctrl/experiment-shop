@@ -338,11 +338,22 @@ function memberBrowserTitle(view) {
   return "All Members";
 }
 
-function buildMemberBrowserEmbed(members, view, page = 0) {
+function getMemberBrowserPageData(members, page = 0) {
   const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
   const safePage = Math.max(0, Math.min(page, totalPages - 1));
   const start = safePage * MEMBER_BROWSER_PAGE_SIZE;
   const pageMembers = members.slice(start, start + MEMBER_BROWSER_PAGE_SIZE);
+
+  return {
+    totalPages,
+    safePage,
+    start,
+    pageMembers,
+  };
+}
+
+function buildMemberBrowserEmbed(members, view, page = 0) {
+  const { totalPages, safePage, start, pageMembers } = getMemberBrowserPageData(members, page);
 
   const lines = pageMembers.map((member, index) => {
     const status = isVerifiedMember(member) ? "Verified" : "Unverified";
@@ -359,30 +370,97 @@ function buildMemberBrowserEmbed(members, view, page = 0) {
     );
 }
 
-function buildMemberBrowserComponents(view, page, totalPages) {
-  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+function buildMemberBrowserSelectMenu(members, view, page = 0) {
+  const { pageMembers } = getMemberBrowserPageData(members, page);
 
-  return [
+  if (!pageMembers.length) return null;
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`staff_member_browser_select:${view}:${page}`)
+      .setPlaceholder("Select a member…")
+      .addOptions(
+        pageMembers.map((member) => ({
+          label: truncate100(member.displayName || member.user.username),
+          description: truncate100(
+            `@${member.user.username} • ${isVerifiedMember(member) ? "Verified" : "Unverified"}`
+          ),
+          value: member.id,
+        }))
+      )
+  );
+}
+
+function buildMemberBrowserComponents(members, view, page = 0) {
+  const { totalPages, safePage } = getMemberBrowserPageData(members, page);
+  const rows = [];
+
+  const selectRow = buildMemberBrowserSelectMenu(members, view, safePage);
+  if (selectRow) rows.push(selectRow);
+
+  rows.push(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
-        .setCustomId(`staff_member_browser:${view}:${Math.max(0, safePage - 1)}`)
+        .setCustomId(`staff_member_browser_page:${view}:${Math.max(0, safePage - 1)}`)
         .setLabel("Previous")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(safePage <= 0),
       new ButtonBuilder()
-        .setCustomId(`staff_member_browser:${view}:${Math.min(totalPages - 1, safePage + 1)}`)
+        .setCustomId(`staff_member_browser_page:${view}:${Math.min(totalPages - 1, safePage + 1)}`)
         .setLabel("Next")
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(safePage >= totalPages - 1),
       new ButtonBuilder()
-        .setCustomId(`staff_member_browser:${view}:${safePage}`)
+        .setCustomId(`staff_member_browser_page:${view}:${safePage}`)
         .setLabel("Refresh")
         .setStyle(ButtonStyle.Primary)
-    ),
+    )
+  );
+
+  rows.push(
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("staff_panel_home")
         .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary)
+    )
+  );
+
+  return rows;
+}
+
+function buildMemberDetailEmbed(member, view, page = 0) {
+  const verified = isVerifiedMember(member) ? "Verified" : "Unverified";
+
+  return new EmbedBuilder()
+    .setTitle("Member Details")
+    .setDescription(
+      `**Name:** ${member.displayName || member.user.username}\n` +
+      `**Username:** @${member.user.username}\n` +
+      `**User ID:** \`${member.id}\`\n` +
+      `**Status:** ${verified}\n` +
+      `**Page Source:** ${memberBrowserTitle(view)} • Page ${Number(page) + 1}`
+    );
+}
+
+function buildMemberDetailComponents(member, view, page = 0) {
+  const verified = isVerifiedMember(member);
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`staff_member_apply_verify:${view}:${page}:${member.id}`)
+        .setLabel("Verify")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(verified),
+      new ButtonBuilder()
+        .setCustomId(`staff_member_apply_unverify:${view}:${page}:${member.id}`)
+        .setLabel("Unverify")
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!verified),
+      new ButtonBuilder()
+        .setCustomId(`staff_member_browser_page:${view}:${page}`)
+        .setLabel("Back to List")
         .setStyle(ButtonStyle.Secondary)
     ),
   ];
@@ -2644,58 +2722,129 @@ if (interaction.commandName === "setupstaffpanel") {
         return interaction.showModal(staffMemberSearchModal("ban", "Find Member To Ban"));
       }
 
-if (customId === "staff_browse_all_members") {
+if (
+  customId === "staff_browse_all_members" ||
+  customId === "staff_browse_verified_members" ||
+  customId === "staff_browse_unverified_members"
+) {
   await interaction.deferUpdate();
 
-  const members = await getFilteredGuildMembers(interaction.guild, "all");
-  const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+  const view =
+    customId === "staff_browse_verified_members"
+      ? "verified"
+      : customId === "staff_browse_unverified_members"
+      ? "unverified"
+      : "all";
 
-  return interaction.editReply({
-    content: "Browsing all members:",
-    embeds: [buildMemberBrowserEmbed(members, "all", 0)],
-    components: buildMemberBrowserComponents("all", 0, totalPages),
+  const members = await getFilteredGuildMembers(interaction.guild, view);
+
+  await interaction.message.edit({
+    content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+    embeds: [buildMemberBrowserEmbed(members, view, 0)],
+    components: buildMemberBrowserComponents(members, view, 0),
   });
+
+  return;
 }
 
-if (customId === "staff_browse_verified_members") {
+if (customId.startsWith("staff_member_browser_page:")) {
   await interaction.deferUpdate();
 
-  const members = await getFilteredGuildMembers(interaction.guild, "verified");
-  const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+  const [, , view, pageRaw] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
 
-  return interaction.editReply({
-    content: "Browsing verified members:",
-    embeds: [buildMemberBrowserEmbed(members, "verified", 0)],
-    components: buildMemberBrowserComponents("verified", 0, totalPages),
+  const members = await getFilteredGuildMembers(interaction.guild, view);
+
+  await interaction.message.edit({
+    content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+    embeds: [buildMemberBrowserEmbed(members, view, page)],
+    components: buildMemberBrowserComponents(members, view, page),
   });
+
+  return;
 }
 
-if (customId === "staff_browse_unverified_members") {
+if (customId.startsWith("staff_member_apply_verify:")) {
   await interaction.deferUpdate();
 
-  const members = await getFilteredGuildMembers(interaction.guild, "unverified");
-  const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+  const [, , , view, pageRaw, targetUserId] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
-  return interaction.editReply({
-    content: "Browsing unverified members:",
-    embeds: [buildMemberBrowserEmbed(members, "unverified", 0)],
-    components: buildMemberBrowserComponents("unverified", 0, totalPages),
+  if (!targetMember) {
+    await interaction.message.edit({
+      content: "Could not find that member.",
+      embeds: [],
+      components: staffModerationPanel().components,
+    });
+    return;
+  }
+
+  const check = canActOnTarget(interaction.member, targetMember);
+  if (!check.ok) {
+    await interaction.message.edit({
+      content: check.reason,
+      embeds: [],
+      components: staffModerationPanel().components,
+    });
+    return;
+  }
+
+  if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+    await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
+  }
+
+  const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+  await interaction.message.edit({
+    content: `✅ Verified <@${targetUserId}>`,
+    embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
+    components: buildMemberDetailComponents(refreshedMember, view, page),
   });
+
+  return;
 }
 
-      if (customId.startsWith("staff_member_browser:")) {
-        const [, view, pageRaw] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
+if (customId.startsWith("staff_member_apply_unverify:")) {
+  await interaction.deferUpdate();
 
-        const members = await getFilteredGuildMembers(interaction.guild, view);
-        const totalPages = Math.max(1, Math.ceil(members.length / MEMBER_BROWSER_PAGE_SIZE));
+  const [, , , view, pageRaw, targetUserId] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
-        return interaction.update({
-          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-          embeds: [buildMemberBrowserEmbed(members, view, page)],
-          components: buildMemberBrowserComponents(view, page, totalPages),
-        });
-      }
+  if (!targetMember) {
+    await interaction.message.edit({
+      content: "Could not find that member.",
+      embeds: [],
+      components: staffModerationPanel().components,
+    });
+    return;
+  }
+
+  const check = canActOnTarget(interaction.member, targetMember);
+  if (!check.ok) {
+    await interaction.message.edit({
+      content: check.reason,
+      embeds: [],
+      components: staffModerationPanel().components,
+    });
+    return;
+  }
+
+  if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+    await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+  }
+
+  const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+  await interaction.message.edit({
+    content: `✅ Removed verified role from <@${targetUserId}>`,
+    embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
+    components: buildMemberDetailComponents(refreshedMember, view, page),
+  });
+
+  return;
+}
 
       if (customId === "staff_restock_all_execute") {
         await restockAllToDefault();
@@ -3349,6 +3498,32 @@ if (customId === "staff_browse_unverified_members") {
             components: staffModerationPanel().components,
           });
         }
+
+        if (customId.startsWith("staff_member_browser_select:")) {
+  await interaction.deferUpdate();
+
+  const [, , view, pageRaw] = customId.split(":");
+  const page = parseInt(pageRaw, 10) || 0;
+  const targetUserId = interaction.values[0];
+  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+  if (!targetMember) {
+    await interaction.message.edit({
+      content: "Could not find that member.",
+      embeds: [],
+      components: staffModerationPanel().components,
+    });
+    return;
+  }
+
+  await interaction.message.edit({
+    content: `Viewing member from ${memberBrowserTitle(view).toLowerCase()}:`,
+    embeds: [buildMemberDetailEmbed(targetMember, view, page)],
+    components: buildMemberDetailComponents(targetMember, view, page),
+  });
+
+  return;
+}
 
         const check = canActOnTarget(interaction.member, targetMember);
         if (!check.ok) {
