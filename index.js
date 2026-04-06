@@ -107,12 +107,14 @@ const SAFE_SEED_CATALOG = {
   ],
 };
 
+/* ---------------------------- RUNTIME STATE ----------------------------- */
+
 const SUBMIT_LOCKS = new Map();
 const CART_UI_MESSAGES = new Map();
 const SHOP_SESSION_CHANNELS = new Map();
 const SHOP_SESSION_TIMEOUTS = new Map();
 
-/* ------------------------------- HELPERS -------------------------------- */
+/* -------------------------------- HELPERS ------------------------------- */
 
 function money(pence) {
   return `£${(Number(pence || 0) / 100).toFixed(2)}`;
@@ -120,6 +122,10 @@ function money(pence) {
 
 function isStaff(member) {
   return member?.roles?.cache?.has(STAFF_ROLE_ID);
+}
+
+function isVerifiedMember(member) {
+  return member?.roles?.cache?.has(VERIFIED_ROLE_ID);
 }
 
 function safeChannelName(str) {
@@ -171,6 +177,12 @@ function clearSubmitLock(userId) {
   SUBMIT_LOCKS.delete(userId);
 }
 
+function timeoutMsFromMinutes(minutes) {
+  const mins = Number(minutes || 0);
+  if (!Number.isFinite(mins) || mins <= 0) return null;
+  return mins * 60 * 1000;
+}
+
 function getShippingPenceForCountry(countryRaw) {
   const c = String(countryRaw || "").trim().toLowerCase();
   if (!c) return SHIPPING_EU_PENCE;
@@ -216,15 +228,13 @@ function bankDetailsText(orderId) {
 }
 
 function shopItemDescription(item) {
-  if (item.stock_qty <= 0) return truncate100(`${money(item.price_pence)} • Out of stock`);
+  if (Number(item.stock_qty || 0) <= 0) {
+    return truncate100(`${money(item.price_pence)} • Out of stock`);
+  }
   return truncate100(`${money(item.price_pence)} • Stock ${item.stock_qty}`);
 }
 
-function isVerifiedMember(member) {
-  return member?.roles?.cache?.has(VERIFIED_ROLE_ID);
-}
-
-/* ------------------------- MODERATION HELPERS -------------------------- */
+/* -------------------------- MODERATION HELPERS -------------------------- */
 
 function memberSearchMatches(member, search) {
   const needle = String(search || "").trim().toLowerCase();
@@ -304,12 +314,6 @@ function canActOnTarget(staffMember, targetMember) {
   }
 
   return { ok: true };
-}
-
-function timeoutMsFromMinutes(minutes) {
-  const mins = Number(minutes || 0);
-  if (!Number.isFinite(mins) || mins <= 0) return null;
-  return mins * 60 * 1000;
 }
 
 async function getFilteredGuildMembers(guild, view = "all") {
@@ -962,7 +966,7 @@ async function restockAllToDefault() {
   }
 }
 
-/* -------------------------- DISCOUNT CODE HELPERS ------------------------ */
+/* -------------------------- DISCOUNT CODE HELPERS ----------------------- */
 
 async function createDiscountCodeRecord(code, discountPercent) {
   const normalized = normalizeDiscountCode(code);
@@ -1102,7 +1106,7 @@ async function createProductRequestRecord(userId, username, requestedProduct, ex
   return res.rows[0];
 }
 
-/* ------------------------------- CART HELPERS ---------------------------- */
+/* ------------------------------- CART HELPERS -------------------------- */
 
 async function getStockForSku(sku) {
   const res = await pool.query(`SELECT stock_qty FROM stock_items WHERE sku=$1`, [sku]);
@@ -1124,7 +1128,11 @@ async function getCartQtyForSku(userId, sku) {
 }
 
 async function getOrCreateCart(userId) {
-  const existing = await pool.query(`SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`, [userId]);
+  const existing = await pool.query(
+    `SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`,
+    [userId]
+  );
+
   if (existing.rows.length) return existing.rows[0].cart_id;
 
   const created = await pool.query(
@@ -1159,7 +1167,11 @@ async function addCartItem(userId, item) {
 }
 
 async function getCartSummary(userId) {
-  const cart = await pool.query(`SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`, [userId]);
+  const cart = await pool.query(
+    `SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`,
+    [userId]
+  );
+
   if (!cart.rows.length) return { items: [], subtotal_pence: 0 };
 
   const cartId = cart.rows[0].cart_id;
@@ -1177,348 +1189,6 @@ async function getCartSummary(userId) {
   const subtotal_pence = items.reduce((sum, it) => sum + it.qty * it.price_pence, 0);
   return { items, subtotal_pence };
 }
-
-/* ------------------------------ SHOP UI ------------------------------ */
-
-async function categorySelectComponents() {
-  const categories = await getCategories();
-
-  const safeOptions = categories.slice(0, 25).map((cat) => ({
-    label: truncate100(cat.category_name),
-    value: String(cat.category_id),
-  }));
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("select_category")
-        .setPlaceholder("Choose a category…")
-        .addOptions(safeOptions)
-    ),
-  ];
-}
-
-async function itemSelectComponents(categoryId) {
-  const items = (await getProductsByCategoryId(categoryId)).slice(0, 25);
-
-  const options = items.map((it) => ({
-    label: truncate100(it.product_name),
-    value: truncate100(it.sku),
-    description: truncate100(`£${(it.price_pence / 100).toFixed(2)}`),
-  }));
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`select_item:${categoryId}`)
-        .setPlaceholder("Choose a product…")
-        .addOptions(options)
-    ),
-  ];
-}
-
-function cartActionsComponents(disableSubmit = false) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("browse_categories")
-        .setLabel("Browse Categories")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("cart_discount")
-        .setLabel("Apply Discount Code")
-        .setStyle(ButtonStyle.Primary),
-      new ButtonBuilder()
-        .setCustomId("cart_submit")
-        .setLabel("Submit Order")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(disableSubmit),
-      new ButtonBuilder()
-        .setCustomId("cart_clear")
-        .setLabel("Clear Cart")
-        .setStyle(ButtonStyle.Danger)
-    ),
-  ];
-}
-
-function menuMessageComponents() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("open_menu")
-        .setLabel("Click to see our menu")
-        .setStyle(ButtonStyle.Primary)
-    ),
-  ];
-}
-
-function verifyPanelComponents() {
-  const embed = new EmbedBuilder()
-    .setTitle("Server Verification")
-    .setDescription(
-      [
-        "To access the full server, click the button below and complete the form.",
-        "",
-        "All fields are required:",
-        "• Full name",
-        "• How you heard about us",
-        "• Referral / who sent you",
-        "• Email address",
-        "• Phone number",
-      ].join("\n")
-    );
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("verify_open_modal")
-      .setLabel("Verify")
-      .setStyle(ButtonStyle.Success)
-  );
-
-  return { embed, row };
-}
-
-function verifyApproveComponents(userId) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`verify_approve:${userId}`)
-        .setLabel("Approve")
-        .setStyle(ButtonStyle.Success)
-    ),
-  ];
-}
-
-function productRequestPanelComponents() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("product_request_open")
-        .setLabel("Request a Product")
-        .setStyle(ButtonStyle.Primary)
-    ),
-  ];
-}
-
-async function staffCategorySelect(
-  customId,
-  placeholder = "Choose a category…",
-  backId = "staff_panel_home",
-  backLabel = "Back"
-) {
-  const categories = await getCategories();
-
-  if (!categories.length) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("staff_noop")
-          .setLabel("No categories available")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(backId)
-          .setLabel(backLabel)
-          .setStyle(ButtonStyle.Secondary)
-      ),
-    ];
-  }
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(customId)
-        .setPlaceholder(placeholder)
-        .addOptions(
-          categories.slice(0, 25).map((cat) => ({
-            label: truncate100(cat.category_name),
-            value: String(cat.category_id),
-          }))
-        )
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(backId)
-        .setLabel(backLabel)
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-}
-
-async function staffProductSelectByCategory(
-  customId,
-  categoryId,
-  placeholder = "Choose a product…",
-  backId = "staff_panel_home",
-  backLabel = "Back"
-) {
-  const products = await getProductsByCategoryId(categoryId);
-
-  if (!products.length) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("staff_noop")
-          .setLabel("No products in this category")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(backId)
-          .setLabel(backLabel)
-          .setStyle(ButtonStyle.Secondary)
-      ),
-    ];
-  }
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(customId)
-        .setPlaceholder(placeholder)
-        .addOptions(
-          products.slice(0, 25).map((p) => ({
-            label: truncate100(p.product_name),
-            description: truncate100(`${money(p.price_pence)} • SKU ${p.sku}`),
-            value: truncate100(p.sku),
-          }))
-        )
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(backId)
-        .setLabel(backLabel)
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-}
-
-/* ------------------------------ STAFF PANEL ------------------------------ */
-
-function navRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("staff_panel_home")
-      .setLabel("⬅ Back")
-      .setStyle(ButtonStyle.Secondary)
-  );
-}
-
-function staffMainPanel() {
-  return {
-    content: `**Staff Panel**\nSelect a section:`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_nav_orders").setLabel("Orders").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_nav_products").setLabel("Products").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_nav_categories").setLabel("Categories").setStyle(ButtonStyle.Success)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_nav_stock").setLabel("Stock").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_nav_discounts").setLabel("Discounts").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("staff_nav_moderation").setLabel("Moderation").setStyle(ButtonStyle.Danger)
-      ),
-    ],
-  };
-}
-
-function staffProductsPanel() {
-  return {
-    content: `🟢 **Products**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_add_product").setLabel("Add").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_edit_product").setLabel("Edit").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_move_product").setLabel("Move").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_delete_product").setLabel("Delete").setStyle(ButtonStyle.Danger)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffCategoriesPanel() {
-  return {
-    content: `🟢 **Categories**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_add_category").setLabel("Add").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_rename_category").setLabel("Rename").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_delete_category").setLabel("Delete").setStyle(ButtonStyle.Danger)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffStockPanel() {
-  return {
-    content: `🟢 **Stock**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_adjust_stock").setLabel("Adjust").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_restock_all").setLabel("Restock All").setStyle(ButtonStyle.Danger)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffDiscountPanel() {
-  return {
-    content: `⚪ **Discounts**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_create_discount").setLabel("Create").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("staff_toggle_discount").setLabel("Toggle").setStyle(ButtonStyle.Secondary)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffOrdersPanel() {
-  return {
-    content: `🔵 **Orders**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_lookup_order").setLabel("Lookup Order").setStyle(ButtonStyle.Primary)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffModerationPanel() {
-  return {
-    content:
-      `🔴 **Moderation**\n\n` +
-      `Search based verification tools already exist here.\n` +
-      `This panel now also includes easier member browsing so staff can scroll through verified and unverified members.`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_add_verified").setLabel("Verify").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("staff_remove_verified").setLabel("Unverify").setStyle(ButtonStyle.Danger)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_timeout").setLabel("Timeout").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("staff_kick").setLabel("Kick").setStyle(ButtonStyle.Danger),
-        new ButtonBuilder().setCustomId("staff_ban").setLabel("Ban").setStyle(ButtonStyle.Danger)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_browse_all_members").setLabel("Browse All").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_browse_verified_members").setLabel("Browse Verified").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_browse_unverified_members").setLabel("Browse Unverified").setStyle(ButtonStyle.Secondary)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-/* ------------------------------ PROFILE / CART ------------------------------ */
 
 async function upsertProfile(userId, fullName, email, phone, shipping) {
   await pool.query(
@@ -1557,11 +1227,16 @@ async function getUserShippingProfile(userId) {
     `,
     [userId]
   );
+
   return res.rows[0] || null;
 }
 
 async function clearCart(userId) {
-  const cart = await pool.query(`SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`, [userId]);
+  const cart = await pool.query(
+    `SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`,
+    [userId]
+  );
+
   if (!cart.rows.length) return;
 
   const cartId = cart.rows[0].cart_id;
@@ -1673,7 +1348,7 @@ async function buildCartMessage(userId, heading = "✅ **Added to basket.**") {
   return content;
 }
 
-/* ------------------------------- RECEIPTS ------------------------------- */
+/* ------------------------------- RECEIPTS ------------------------------ */
 
 async function createReceiptChannel(guild, user, orderId) {
   const category = await guild.channels.fetch(ORDERS_CATEGORY_ID).catch(() => null);
@@ -1694,7 +1369,17 @@ async function createReceiptChannel(guild, user, orderId) {
   return channel;
 }
 
-function receiptEmbed(orderId, items, subtotal, discountAmount, discountCode, shipping, total, shippingProfile, status = "pending") {
+function receiptEmbed(
+  orderId,
+  items,
+  subtotal,
+  discountAmount,
+  discountCode,
+  shipping,
+  total,
+  shippingProfile,
+  status = "pending"
+) {
   const lines = items.map(
     (it) => `• **${it.name}** (${it.size}, ${it.color}) × ${it.qty} — ${money(it.qty * it.price_pence)}`
   );
@@ -1789,10 +1474,12 @@ function staffReceiptControls(orderId, status = "pending") {
   ];
 }
 
-/* -------------------------------- MODALS -------------------------------- */
+/* -------------------------------- MODALS ------------------------------- */
 
 function shippingModal() {
-  const modal = new ModalBuilder().setCustomId("shipping_modal").setTitle("Shipping details");
+  const modal = new ModalBuilder()
+    .setCustomId("shipping_modal")
+    .setTitle("Shipping details");
 
   const fullName = new TextInputBuilder()
     .setCustomId("full_name")
@@ -1836,7 +1523,9 @@ function shippingModal() {
 }
 
 function qtyOtherModal(categoryId, sku) {
-  const modal = new ModalBuilder().setCustomId(`qty_other_modal:${categoryId}:${sku}`).setTitle("Quantity");
+  const modal = new ModalBuilder()
+    .setCustomId(`qty_other_modal:${categoryId}:${sku}`)
+    .setTitle("Quantity");
 
   const qty = new TextInputBuilder()
     .setCustomId("qty")
@@ -1849,7 +1538,9 @@ function qtyOtherModal(categoryId, sku) {
 }
 
 function discountCodeModal() {
-  const modal = new ModalBuilder().setCustomId("discount_code_modal").setTitle("Apply discount code");
+  const modal = new ModalBuilder()
+    .setCustomId("discount_code_modal")
+    .setTitle("Apply discount code");
 
   const code = new TextInputBuilder()
     .setCustomId("discount_code")
@@ -2178,7 +1869,347 @@ function staffBanModal(userId, label) {
   return modal;
 }
 
-/* -------------------------- SESSION / UI HELPERS ------------------------- */
+/* ----------------------------- SHOP UI HELPERS -------------------------- */
+
+async function categorySelectComponents() {
+  const categories = await getCategories();
+
+  const safeOptions = categories.slice(0, 25).map((cat) => ({
+    label: truncate100(cat.category_name),
+    value: String(cat.category_id),
+  }));
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId("select_category")
+        .setPlaceholder("Choose a category…")
+        .addOptions(safeOptions)
+    ),
+  ];
+}
+
+async function itemSelectComponents(categoryId) {
+  const items = (await getProductsByCategoryId(categoryId)).slice(0, 25);
+
+  const options = items.map((it) => ({
+    label: truncate100(it.product_name),
+    value: truncate100(it.sku),
+    description: shopItemDescription(it),
+  }));
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(`select_item:${categoryId}`)
+        .setPlaceholder("Choose a product…")
+        .addOptions(options)
+    ),
+  ];
+}
+
+function cartActionsComponents(disableSubmit = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("browse_categories")
+        .setLabel("Browse Categories")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("cart_discount")
+        .setLabel("Apply Discount Code")
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId("cart_submit")
+        .setLabel("Submit Order")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(disableSubmit),
+      new ButtonBuilder()
+        .setCustomId("cart_clear")
+        .setLabel("Clear Cart")
+        .setStyle(ButtonStyle.Danger)
+    ),
+  ];
+}
+
+function menuMessageComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("open_menu")
+        .setLabel("Click to see our menu")
+        .setStyle(ButtonStyle.Primary)
+    ),
+  ];
+}
+
+function verifyPanelComponents() {
+  const embed = new EmbedBuilder()
+    .setTitle("Server Verification")
+    .setDescription(
+      [
+        "To access the full server, click the button below and complete the form.",
+        "",
+        "All fields are required:",
+        "• Full name",
+        "• How you heard about us",
+        "• Referral / who sent you",
+        "• Email address",
+        "• Phone number",
+      ].join("\n")
+    );
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("verify_open_modal")
+      .setLabel("Verify")
+      .setStyle(ButtonStyle.Success)
+  );
+
+  return { embed, row };
+}
+
+function verifyApproveComponents(userId) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`verify_approve:${userId}`)
+        .setLabel("Approve")
+        .setStyle(ButtonStyle.Success)
+    ),
+  ];
+}
+
+function productRequestPanelComponents() {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("product_request_open")
+        .setLabel("Request a Product")
+        .setStyle(ButtonStyle.Primary)
+    ),
+  ];
+}
+
+async function staffCategorySelect(
+  customId,
+  placeholder = "Choose a category…",
+  backId = "staff_panel_home",
+  backLabel = "Back"
+) {
+  const categories = await getCategories();
+
+  if (!categories.length) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_noop")
+          .setLabel("No categories available")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(backId)
+          .setLabel(backLabel)
+          .setStyle(ButtonStyle.Secondary)
+      ),
+    ];
+  }
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(customId)
+        .setPlaceholder(placeholder)
+        .addOptions(
+          categories.slice(0, 25).map((cat) => ({
+            label: truncate100(cat.category_name),
+            value: String(cat.category_id),
+          }))
+        )
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(backId)
+        .setLabel(backLabel)
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+async function staffProductSelectByCategory(
+  customId,
+  categoryId,
+  placeholder = "Choose a product…",
+  backId = "staff_panel_home",
+  backLabel = "Back"
+) {
+  const products = await getProductsByCategoryId(categoryId);
+
+  if (!products.length) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("staff_noop")
+          .setLabel("No products in this category")
+          .setStyle(ButtonStyle.Secondary)
+          .setDisabled(true)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(backId)
+          .setLabel(backLabel)
+          .setStyle(ButtonStyle.Secondary)
+      ),
+    ];
+  }
+
+  return [
+    new ActionRowBuilder().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(customId)
+        .setPlaceholder(placeholder)
+        .addOptions(
+          products.slice(0, 25).map((p) => ({
+            label: truncate100(p.product_name),
+            description: truncate100(`${money(p.price_pence)} • SKU ${p.sku}`),
+            value: truncate100(p.sku),
+          }))
+        )
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(backId)
+        .setLabel(backLabel)
+        .setStyle(ButtonStyle.Secondary)
+    ),
+  ];
+}
+
+/* ------------------------------ STAFF PANELS ---------------------------- */
+
+function navRow() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId("staff_panel_home")
+      .setLabel("⬅ Back")
+      .setStyle(ButtonStyle.Secondary)
+  );
+}
+
+function staffMainPanel() {
+  return {
+    content: `**Staff Panel**\nSelect a section:`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_nav_orders").setLabel("Orders").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_nav_products").setLabel("Products").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_nav_categories").setLabel("Categories").setStyle(ButtonStyle.Success)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_nav_stock").setLabel("Stock").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_nav_discounts").setLabel("Discounts").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_nav_moderation").setLabel("Moderation").setStyle(ButtonStyle.Danger)
+      ),
+    ],
+  };
+}
+
+function staffProductsPanel() {
+  return {
+    content: `🟢 **Products**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_add_product").setLabel("Add").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_edit_product").setLabel("Edit").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_move_product").setLabel("Move").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_delete_product").setLabel("Delete").setStyle(ButtonStyle.Danger)
+      ),
+      navRow(),
+    ],
+  };
+}
+
+function staffCategoriesPanel() {
+  return {
+    content: `🟢 **Categories**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_add_category").setLabel("Add").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_rename_category").setLabel("Rename").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_delete_category").setLabel("Delete").setStyle(ButtonStyle.Danger)
+      ),
+      navRow(),
+    ],
+  };
+}
+
+function staffStockPanel() {
+  return {
+    content: `🟢 **Stock**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_adjust_stock").setLabel("Adjust").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_restock_all").setLabel("Restock All").setStyle(ButtonStyle.Danger)
+      ),
+      navRow(),
+    ],
+  };
+}
+
+function staffDiscountPanel() {
+  return {
+    content: `⚪ **Discounts**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_create_discount").setLabel("Create").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_toggle_discount").setLabel("Toggle").setStyle(ButtonStyle.Secondary)
+      ),
+      navRow(),
+    ],
+  };
+}
+
+function staffOrdersPanel() {
+  return {
+    content: `🔵 **Orders**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_lookup_order").setLabel("Lookup Order").setStyle(ButtonStyle.Primary)
+      ),
+      navRow(),
+    ],
+  };
+}
+
+function staffModerationPanel() {
+  return {
+    content:
+      `🔴 **Moderation**\n\n` +
+      `Search based verification tools already exist here.\n` +
+      `This panel also includes member browsing so staff can scroll through verified and unverified members.`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_add_verified").setLabel("Verify").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("staff_remove_verified").setLabel("Unverify").setStyle(ButtonStyle.Danger)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_timeout").setLabel("Timeout").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("staff_kick").setLabel("Kick").setStyle(ButtonStyle.Danger),
+        new ButtonBuilder().setCustomId("staff_ban").setLabel("Ban").setStyle(ButtonStyle.Danger)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_browse_all_members").setLabel("Browse All").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_browse_verified_members").setLabel("Browse Verified").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_browse_unverified_members").setLabel("Browse Unverified").setStyle(ButtonStyle.Secondary)
+      ),
+      navRow(),
+    ],
+  };
+}
+
+/* -------------------------- SESSION / UI HELPERS ------------------------ */
 
 async function getTrackedCartUiMessage(userId, channel) {
   const tracked = CART_UI_MESSAGES.get(userId);
@@ -2365,27 +2396,27 @@ async function showCartInSession(interaction, heading = "🛒 **Your basket**") 
   });
 }
 
-/* -------------------------- SLASH COMMAND SETUP -------------------------- */
+/* -------------------------- SLASH COMMAND SETUP ------------------------- */
 
 const commands = [
   new SlashCommandBuilder()
     .setName("setupshop")
-    .setDescription("Post/refresh the shop menu message in the menu channel")
+    .setDescription("Post or refresh the shop menu message in the menu channel")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName("setupverify")
-    .setDescription("Post/refresh the verification panel in the verify channel")
+    .setDescription("Post or refresh the verification panel in the verify channel")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName("setupstaffpanel")
-    .setDescription("Post/refresh the staff control panel in the staff-only channel")
+    .setDescription("Post or refresh the staff control panel in the staff-only channel")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
     .setName("setupproductrequests")
-    .setDescription("Post/refresh the product request panel in the product request channel")
+    .setDescription("Post or refresh the product request panel in the product request channel")
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
   new SlashCommandBuilder()
@@ -2398,7 +2429,7 @@ async function registerCommands() {
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
 }
 
-/* ------------------------------- DISCORD -------------------------------- */
+/* ------------------------------- DISCORD ------------------------------- */
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
@@ -2420,7 +2451,10 @@ client.on("interactionCreate", async (interaction) => {
         await interaction.deferReply({ flags: 64 });
         deferred = true;
 
-        const menuChannel = await client.channels.fetch(MENU_CHANNEL_ID);
+        const menuChannel = await client.channels.fetch(MENU_CHANNEL_ID).catch(() => null);
+        if (!menuChannel) {
+          return interaction.editReply("❌ Could not find the menu channel. Check MENU_CHANNEL_ID.");
+        }
 
         const content =
           `**Welcome to ${STORE_NAME}!**\n\n` +
@@ -2440,7 +2474,7 @@ client.on("interactionCreate", async (interaction) => {
 
         await menuChannel.send({ content, components: menuMessageComponents() });
 
-        return interaction.editReply("✅ Shop menu message posted/refreshed in the menu channel.");
+        return interaction.editReply("✅ Shop menu message posted in the menu channel.");
       }
 
       if (interaction.commandName === "setupverify") {
@@ -2462,32 +2496,28 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.editReply(`✅ Verification panel posted in <#${VERIFY_CHANNEL_ID}>.`);
       }
 
-if (interaction.commandName === "setupstaffpanel") {
-  await interaction.deferReply({ flags: 64 });
-  deferred = true;
+      if (interaction.commandName === "setupstaffpanel") {
+        await interaction.deferReply({ flags: 64 });
+        deferred = true;
 
-  try {
-    const staffChannel = await client.channels.fetch(STAFF_ONLY_CHANNEL_ID).catch(() => null);
+        const staffChannel = await client.channels.fetch(STAFF_ONLY_CHANNEL_ID).catch(() => null);
+        if (!staffChannel) {
+          return interaction.editReply("❌ Could not find the staff-only channel. Check STAFF_ONLY_CHANNEL_ID.");
+        }
 
-    if (!staffChannel) {
-      return interaction.editReply("❌ Could not find the staff-only channel. Check STAFF_ONLY_CHANNEL_ID.");
-    }
+        if (staffChannel.type !== ChannelType.GuildText) {
+          return interaction.editReply("❌ STAFF_ONLY_CHANNEL_ID is not a normal text channel.");
+        }
 
-    if (staffChannel.type !== ChannelType.GuildText) {
-      return interaction.editReply("❌ STAFF_ONLY_CHANNEL_ID is not a normal text channel.");
-    }
+        const panel = staffMainPanel();
 
-    await staffChannel.send({
-      content: staffMainPanel().content,
-      components: staffMainPanel().components,
-    });
+        await staffChannel.send({
+          content: panel.content,
+          components: panel.components,
+        });
 
-    return interaction.editReply(`✅ Staff panel posted in <#${STAFF_ONLY_CHANNEL_ID}>.`);
-  } catch (err) {
-    console.error("setupstaffpanel error:", err);
-    return interaction.editReply(`❌ setupstaffpanel failed: ${err.message || "Unknown error"}`);
-  }
-}
+        return interaction.editReply(`✅ Staff panel posted in <#${STAFF_ONLY_CHANNEL_ID}>.`);
+      }
 
       if (interaction.commandName === "setupproductrequests") {
         await interaction.deferReply({ flags: 64 });
@@ -2563,14 +2593,6 @@ if (interaction.commandName === "setupstaffpanel") {
           return interaction.reply({ content: "Could not find that user in the server.", flags: 64 });
         }
 
-        const verifiedRole =
-          guild.roles.cache.get(VERIFIED_ROLE_ID) ||
-          (await guild.roles.fetch(VERIFIED_ROLE_ID).catch(() => null));
-
-        if (!verifiedRole) {
-          return interaction.reply({ content: "Could not find the Verified role. Check VERIFIED_ROLE_ID.", flags: 64 });
-        }
-
         if (member.roles.cache.has(VERIFIED_ROLE_ID)) {
           return interaction.reply({ content: "That user is already verified.", flags: 64 });
         }
@@ -2590,7 +2612,7 @@ if (interaction.commandName === "setupstaffpanel") {
         return;
       }
 
-      /* ---------------------- STAFF NAVIGATION PANEL ---------------------- */
+      /* -------------------------- STAFF NAVIGATION ------------------------- */
 
       if (customId === "staff_panel_home") {
         return interaction.update(staffMainPanel());
@@ -2620,7 +2642,7 @@ if (interaction.commandName === "setupstaffpanel") {
         return interaction.update(staffModerationPanel());
       }
 
-      /* ---------------------- STAFF ACTION BUTTONS ---------------------- */
+      /* --------------------------- STAFF ACTIONS -------------------------- */
 
       if (customId === "staff_add_product") {
         return interaction.update({
@@ -2722,129 +2744,128 @@ if (interaction.commandName === "setupstaffpanel") {
         return interaction.showModal(staffMemberSearchModal("ban", "Find Member To Ban"));
       }
 
-if (
-  customId === "staff_browse_all_members" ||
-  customId === "staff_browse_verified_members" ||
-  customId === "staff_browse_unverified_members"
-) {
-  await interaction.deferUpdate();
+      if (
+        customId === "staff_browse_all_members" ||
+        customId === "staff_browse_verified_members" ||
+        customId === "staff_browse_unverified_members"
+      ) {
+        await interaction.deferUpdate();
 
-  const view =
-    customId === "staff_browse_verified_members"
-      ? "verified"
-      : customId === "staff_browse_unverified_members"
-      ? "unverified"
-      : "all";
+        const view =
+          customId === "staff_browse_verified_members"
+            ? "verified"
+            : customId === "staff_browse_unverified_members"
+            ? "unverified"
+            : "all";
 
-  const members = await getFilteredGuildMembers(interaction.guild, view);
+        const members = await getFilteredGuildMembers(interaction.guild, view);
 
-  await interaction.message.edit({
-    content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-    embeds: [buildMemberBrowserEmbed(members, view, 0)],
-    components: buildMemberBrowserComponents(members, view, 0),
-  });
+        await interaction.message.edit({
+          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+          embeds: [buildMemberBrowserEmbed(members, view, 0)],
+          components: buildMemberBrowserComponents(members, view, 0),
+        });
 
-  return;
-}
+        return;
+      }
 
-if (customId.startsWith("staff_member_browser_page:")) {
-  await interaction.deferUpdate();
+      if (customId.startsWith("staff_member_browser_page:")) {
+        await interaction.deferUpdate();
 
-  const [, , view, pageRaw] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
+        const [, , view, pageRaw] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const members = await getFilteredGuildMembers(interaction.guild, view);
 
-  const members = await getFilteredGuildMembers(interaction.guild, view);
+        await interaction.message.edit({
+          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+          embeds: [buildMemberBrowserEmbed(members, view, page)],
+          components: buildMemberBrowserComponents(members, view, page),
+        });
 
-  await interaction.message.edit({
-    content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-    embeds: [buildMemberBrowserEmbed(members, view, page)],
-    components: buildMemberBrowserComponents(members, view, page),
-  });
+        return;
+      }
 
-  return;
-}
+      if (customId.startsWith("staff_member_apply_verify:")) {
+        await interaction.deferUpdate();
 
-if (customId.startsWith("staff_member_apply_verify:")) {
-  await interaction.deferUpdate();
+        const [, , , view, pageRaw, targetUserId] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
-  const [, , , view, pageRaw, targetUserId] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+        if (!targetMember) {
+          await interaction.message.edit({
+            content: "Could not find that member.",
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
 
-  if (!targetMember) {
-    await interaction.message.edit({
-      content: "Could not find that member.",
-      embeds: [],
-      components: staffModerationPanel().components,
-    });
-    return;
-  }
+        const check = canActOnTarget(interaction.member, targetMember);
+        if (!check.ok) {
+          await interaction.message.edit({
+            content: check.reason,
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
 
-  const check = canActOnTarget(interaction.member, targetMember);
-  if (!check.ok) {
-    await interaction.message.edit({
-      content: check.reason,
-      embeds: [],
-      components: staffModerationPanel().components,
-    });
-    return;
-  }
+        if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+          await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
+        }
 
-  if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-    await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
-  }
+        const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
 
-  const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
+        await interaction.message.edit({
+          content: `✅ Verified <@${targetUserId}>`,
+          embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
+          components: buildMemberDetailComponents(refreshedMember, view, page),
+        });
 
-  await interaction.message.edit({
-    content: `✅ Verified <@${targetUserId}>`,
-    embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
-    components: buildMemberDetailComponents(refreshedMember, view, page),
-  });
+        return;
+      }
 
-  return;
-}
+      if (customId.startsWith("staff_member_apply_unverify:")) {
+        await interaction.deferUpdate();
 
-if (customId.startsWith("staff_member_apply_unverify:")) {
-  await interaction.deferUpdate();
+        const [, , , view, pageRaw, targetUserId] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
 
-  const [, , , view, pageRaw, targetUserId] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+        if (!targetMember) {
+          await interaction.message.edit({
+            content: "Could not find that member.",
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
 
-  if (!targetMember) {
-    await interaction.message.edit({
-      content: "Could not find that member.",
-      embeds: [],
-      components: staffModerationPanel().components,
-    });
-    return;
-  }
+        const check = canActOnTarget(interaction.member, targetMember);
+        if (!check.ok) {
+          await interaction.message.edit({
+            content: check.reason,
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
 
-  const check = canActOnTarget(interaction.member, targetMember);
-  if (!check.ok) {
-    await interaction.message.edit({
-      content: check.reason,
-      embeds: [],
-      components: staffModerationPanel().components,
-    });
-    return;
-  }
+        if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+          await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+        }
 
-  if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-    await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
-  }
+        const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
 
-  const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
+        await interaction.message.edit({
+          content: `✅ Removed verified role from <@${targetUserId}>`,
+          embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
+          components: buildMemberDetailComponents(refreshedMember, view, page),
+        });
 
-  await interaction.message.edit({
-    content: `✅ Removed verified role from <@${targetUserId}>`,
-    embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
-    components: buildMemberDetailComponents(refreshedMember, view, page),
-  });
-
-  return;
-}
+        return;
+      }
 
       if (customId === "staff_restock_all_execute") {
         await restockAllToDefault();
@@ -2855,7 +2876,7 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
         });
       }
 
-      /* ---------------------------- SHOP BUTTONS ---------------------------- */
+      /* ---------------------------- SHOP BUTTONS --------------------------- */
 
       if (customId === "browse_categories") {
         return showCategoriesInSession(interaction, "Choose a category:");
@@ -2872,7 +2893,11 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
         });
 
         setTimeout(async () => {
-          await destroyShopSessionByChannel(interaction.channel, interaction.user.id, "Shop session closed by user");
+          await destroyShopSessionByChannel(
+            interaction.channel,
+            interaction.user.id,
+            "Shop session closed by user"
+          );
         }, 1500);
 
         return;
@@ -2965,7 +2990,11 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
         });
 
         setTimeout(async () => {
-          await destroyShopSessionByChannel(interaction.channel, interaction.user.id, "Cart cleared and shop closed");
+          await destroyShopSessionByChannel(
+            interaction.channel,
+            interaction.user.id,
+            "Cart cleared and shop closed"
+          );
         }, 1500);
 
         return;
@@ -3098,10 +3127,12 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
             await recordDiscountCodeUse(interaction.user.id, discount.discount_code, orderId);
           }
 
-          const guild = interaction.guild;
-          const receiptChannel = await createReceiptChannel(guild, interaction.user, orderId);
+          const receiptChannel = await createReceiptChannel(interaction.guild, interaction.user, orderId);
 
-          await pool.query(`UPDATE orders SET receipt_channel_id=$1 WHERE order_id=$2`, [receiptChannel.id, orderId]);
+          await pool.query(`UPDATE orders SET receipt_channel_id=$1 WHERE order_id=$2`, [
+            receiptChannel.id,
+            orderId,
+          ]);
 
           await receiptChannel.send({
             content:
@@ -3149,7 +3180,7 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
         }
       }
 
-      /* ------------------------- ORDER ACTION BUTTONS ------------------------ */
+      /* ------------------------- ORDER ACTIONS -------------------------- */
 
       if (customId.startsWith("staff_mark_paid:")) {
         const [, orderIdStr] = customId.split(":");
@@ -3199,10 +3230,7 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
           return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
-        const orderRes = await pool.query(
-          `SELECT status, user_id FROM orders WHERE order_id=$1`,
-          [orderId]
-        );
+        const orderRes = await pool.query(`SELECT status, user_id FROM orders WHERE order_id=$1`, [orderId]);
 
         if (!orderRes.rows.length) {
           return interaction.reply({ content: "Order not found.", flags: 64 });
@@ -3277,7 +3305,10 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
         }
 
         if (currentStatus !== "dispatched") {
-          return interaction.reply({ content: "Order must be marked as dispatched before it can be completed.", flags: 64 });
+          return interaction.reply({
+            content: "Order must be marked as dispatched before it can be completed.",
+            flags: 64,
+          });
         }
 
         await pool.query(`UPDATE orders SET status='completed' WHERE order_id=$1`, [orderId]);
@@ -3300,21 +3331,97 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
 
         return;
       }
+
+      /* ----------------------- EXTRA PRODUCT BUTTONS ---------------------- */
+
+      if (customId.startsWith("staff_open_rename_product_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_price_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
+      }
+
+      if (customId.startsWith("staff_open_stock_modal_direct:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_move_product_flow:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `Choose the new category for **${product.product_name}** (${sku}):`,
+          components: await staffCategorySelect(
+            `staff_move_product_select_category:${sku}`,
+            "Choose a new category…"
+          ),
+        });
+      }
+
+      if (customId.startsWith("staff_delete_product_confirm:")) {
+        const [, sku] = customId.split(":");
+        const deleted = await deleteProduct(sku);
+        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
+          components: staffProductsPanel().components,
+        });
+      }
     }
 
-    /* -------------------------- STRING SELECT MENUS ------------------------- */
+    /* ------------------------- STRING SELECT MENUS ------------------------ */
 
     if (interaction.isStringSelectMenu()) {
       const { customId } = interaction;
 
-      if (
-        customId === "select_category" ||
-        customId.startsWith("select_item:")
-      ) {
+      if (customId === "select_category" || customId.startsWith("select_item:")) {
         resetShopSessionTimeout(interaction.guild, interaction.user.id);
       }
 
-      /* --------------------------- STAFF SELECTS --------------------------- */
+      /* ----------------------- STAFF MEMBER BROWSER ----------------------- */
+
+      if (customId.startsWith("staff_member_browser_select:")) {
+        await interaction.deferUpdate();
+
+        const [, , view, pageRaw] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetUserId = interaction.values[0];
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+        if (!targetMember) {
+          await interaction.message.edit({
+            content: "Could not find that member.",
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
+
+        await interaction.message.edit({
+          content: `Viewing member from ${memberBrowserTitle(view).toLowerCase()}:`,
+          embeds: [buildMemberDetailEmbed(targetMember, view, page)],
+          components: buildMemberDetailComponents(targetMember, view, page),
+        });
+
+        return;
+      }
+
+      /* --------------------------- STAFF SELECTS -------------------------- */
 
       if (customId === "staff_stock_select_category") {
         const categoryId = interaction.values[0];
@@ -3541,10 +3648,7 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
 
         if (action === "timeout") {
           return interaction.showModal(
-            staffTimeoutModal(
-              targetMember.id,
-              targetMember.displayName || targetMember.user.username
-            )
+            staffTimeoutModal(targetMember.id, targetMember.displayName || targetMember.user.username)
           );
         }
 
@@ -3559,121 +3663,12 @@ if (customId.startsWith("staff_member_apply_unverify:")) {
 
         if (action === "ban") {
           return interaction.showModal(
-            staffBanModal(
-              targetMember.id,
-              targetMember.displayName || targetMember.user.username
-            )
+            staffBanModal(targetMember.id, targetMember.displayName || targetMember.user.username)
           );
         }
       }
 
-      if (customId.startsWith("staff_member_search_select:")) {
-  const [, action] = customId.split(":");
-  const targetUserId = interaction.values[0];
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-  if (!targetMember) {
-    return interaction.update({
-      content: "Could not find that member.",
-      components: staffModerationPanel().components,
-    });
-  }
-
-  const check = canActOnTarget(interaction.member, targetMember);
-  if (!check.ok) {
-    return interaction.update({
-      content: check.reason,
-      components: staffModerationPanel().components,
-    });
-  }
-
-  if (action === "add_verified") {
-    if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-      return interaction.update({
-        content: "That member already has the verified role.",
-        components: staffModerationPanel().components,
-      });
-    }
-
-    await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
-
-    return interaction.update({
-      content: `✅ Added verified role to <@${targetMember.id}>`,
-      components: staffModerationPanel().components,
-    });
-  }
-
-  if (action === "remove_verified") {
-    if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-      return interaction.update({
-        content: "That member does not currently have the verified role.",
-        components: staffModerationPanel().components,
-      });
-    }
-
-    await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
-
-    return interaction.update({
-      content: `✅ Removed verified role from <@${targetMember.id}>`,
-      components: staffModerationPanel().components,
-    });
-  }
-
-  if (action === "timeout") {
-    return interaction.showModal(
-      staffTimeoutModal(
-        targetMember.id,
-        targetMember.displayName || targetMember.user.username
-      )
-    );
-  }
-
-  if (action === "kick") {
-    await targetMember.kick(`Kicked by ${interaction.user.tag}`);
-
-    return interaction.update({
-      content: `✅ Kicked <@${targetMember.id}>`,
-      components: staffModerationPanel().components,
-    });
-  }
-
-  if (action === "ban") {
-    return interaction.showModal(
-      staffBanModal(
-        targetMember.id,
-        targetMember.displayName || targetMember.user.username
-      )
-    );
-  }
-}
-
-if (customId.startsWith("staff_member_browser_select:")) {
-  await interaction.deferUpdate();
-
-  const [, , view, pageRaw] = customId.split(":");
-  const page = parseInt(pageRaw, 10) || 0;
-  const targetUserId = interaction.values[0];
-  const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-  if (!targetMember) {
-    await interaction.message.edit({
-      content: "Could not find that member.",
-      embeds: [],
-      components: staffModerationPanel().components,
-    });
-    return;
-  }
-
-  await interaction.message.edit({
-    content: `Viewing member from ${memberBrowserTitle(view).toLowerCase()}:`,
-    embeds: [buildMemberDetailEmbed(targetMember, view, page)],
-    components: buildMemberDetailComponents(targetMember, view, page),
-  });
-
-  return;
-}
-
-      /* ------------------------------ SHOP MENUS ----------------------------- */
+      /* ---------------------------- SHOP MENUS ---------------------------- */
 
       if (customId === "select_category") {
         trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
@@ -3753,7 +3748,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
       }
     }
 
-      /* ------------------------------ MODAL SUBMITS ----------------------------- */
+    /* ----------------------------- MODAL SUBMITS ------------------------- */
 
     if (interaction.isModalSubmit()) {
       const { customId } = interaction;
@@ -3830,7 +3825,10 @@ if (customId.startsWith("staff_member_browser_select:")) {
 
         const logChannel = await interaction.guild.channels.fetch(VERIFICATION_LOG_CHANNEL_ID).catch(() => null);
         if (!logChannel) {
-          return interaction.reply({ content: "Could not find the verification log channel. Check VERIFICATION_LOG_CHANNEL_ID.", flags: 64 });
+          return interaction.reply({
+            content: "Could not find the verification log channel. Check VERIFICATION_LOG_CHANNEL_ID.",
+            flags: 64,
+          });
         }
 
         const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
@@ -3886,7 +3884,8 @@ if (customId.startsWith("staff_member_browser_select:")) {
 
         if (!reviewChannel) {
           return interaction.reply({
-            content: "Your request could not be forwarded because the review channel was not found. Check PRODUCT_REQUEST_REVIEW_CHANNEL_ID.",
+            content:
+              "Your request could not be forwarded because the review channel was not found. Check PRODUCT_REQUEST_REVIEW_CHANNEL_ID.",
             flags: 64,
           });
         }
@@ -3914,7 +3913,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
         });
       }
 
-      /* --------------------------- STAFF MODALS --------------------------- */
+      /* ---------------------------- STAFF MODALS --------------------------- */
 
       if (customId === "staff_add_category_modal") {
         const categoryName = interaction.fields.getTextInputValue("category_name")?.trim();
@@ -4014,7 +4013,10 @@ if (customId.startsWith("staff_member_browser_select:")) {
         const qty = parseInt(qtyRaw, 10);
 
         if (!Number.isFinite(qty) || qty < 0) {
-          return interaction.reply({ content: "Enter a valid stock quantity of 0 or more.", flags: 64 });
+          return interaction.reply({
+            content: "Enter a valid stock quantity of 0 or more.",
+            flags: 64,
+          });
         }
 
         const updated = await updateProductStock(sku, qty);
@@ -4056,7 +4058,10 @@ if (customId.startsWith("staff_member_browser_select:")) {
             { name: "Status", value: order.status || "unknown", inline: true },
             { name: "Total", value: money(order.total_pence || 0), inline: true },
             { name: "User ID", value: order.user_id || "unknown", inline: true },
-            { name: "Receipt Channel", value: order.receipt_channel_id ? `<#${order.receipt_channel_id}>` : "None" },
+            {
+              name: "Receipt Channel",
+              value: order.receipt_channel_id ? `<#${order.receipt_channel_id}>` : "None",
+            },
             { name: "Items", value: itemLines.join("\n") || "_No items_" }
           )
           .setTimestamp(new Date(order.created_at));
@@ -4126,7 +4131,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
           return interaction.reply({ content: "Enter a search term.", flags: 64 });
         }
 
-        let options = {};
+        const options = {};
         if (action === "add_verified") options.excludeVerified = true;
 
         const matches = await searchGuildMembers(interaction.guild, search, options);
@@ -4146,7 +4151,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
                 .setCustomId(`staff_member_search_select:${action}`)
                 .setPlaceholder("Select a member…")
                 .addOptions(memberSelectOptions(matches))
-            )
+            ),
           ],
           flags: 64,
         });
@@ -4178,10 +4183,7 @@ if (customId.startsWith("staff_member_browser_select:")) {
           return interaction.reply({ content: "Timeout cannot exceed 28 days.", flags: 64 });
         }
 
-        await targetMember.timeout(
-          timeoutMs,
-          reasonRaw || `Timed out by ${interaction.user.tag}`
-        );
+        await targetMember.timeout(timeoutMs, reasonRaw || `Timed out by ${interaction.user.tag}`);
 
         return interaction.reply({
           content: `✅ Timed out <@${targetMember.id}> for ${minutesRaw} minute(s).`,
@@ -4220,7 +4222,10 @@ if (customId.startsWith("staff_member_browser_select:")) {
         const qty = parseInt(qtyRaw, 10);
 
         if (!Number.isFinite(qty) || qty <= 0) {
-          return interaction.reply({ content: "Please enter a valid quantity (number > 0).", flags: 64 });
+          return interaction.reply({
+            content: "Please enter a valid quantity (number > 0).",
+            flags: 64,
+          });
         }
 
         const item = await getProductBySku(sku);
@@ -4288,61 +4293,6 @@ if (customId.startsWith("staff_member_browser_select:")) {
           components: cartActionsComponents(),
         });
         return;
-      }
-    }
-
-    /* ------------------------- EXTRA BUTTON HANDLERS ------------------------- */
-
-    if (interaction.isButton()) {
-      const { customId } = interaction;
-
-      if (customId.startsWith("staff_open_rename_product_modal:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_price_modal:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
-      }
-
-      if (customId.startsWith("staff_open_stock_modal_direct:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_move_product_flow:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content: `Choose the new category for **${product.product_name}** (${sku}):`,
-          components: await staffCategorySelect(
-            `staff_move_product_select_category:${sku}`,
-            "Choose a new category…"
-          ),
-        });
-      }
-
-      if (customId.startsWith("staff_delete_product_confirm:")) {
-        const [, sku] = customId.split(":");
-        const deleted = await deleteProduct(sku);
-        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
-          components: staffProductsPanel().components,
-        });
       }
     }
   } catch (err) {
