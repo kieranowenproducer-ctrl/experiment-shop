@@ -2032,6 +2032,16 @@ async function categorySelectComponents() {
         .setPlaceholder("Choose a category…")
         .addOptions(safeOptions)
     ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("shop_view_cart")
+        .setLabel("View Basket")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("shop_close_session")
+        .setLabel("Close Shop")
+        .setStyle(ButtonStyle.Danger)
+    ),
   ];
 }
 
@@ -2051,28 +2061,18 @@ async function itemSelectComponents(categoryId) {
         .setPlaceholder("Choose a product…")
         .addOptions(options)
     ),
-  ];
-}
-
-function cartActionsComponents(disableSubmit = false) {
-  return [
     new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("browse_categories")
-        .setLabel("Browse Categories")
+        .setLabel("Back to Categories")
         .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId("cart_discount")
-        .setLabel("Apply Discount Code")
-        .setStyle(ButtonStyle.Primary),
+        .setCustomId("shop_view_cart")
+        .setLabel("View Basket")
+        .setStyle(ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId("cart_submit")
-        .setLabel("Submit Order")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(disableSubmit),
-      new ButtonBuilder()
-        .setCustomId("cart_clear")
-        .setLabel("Clear Cart")
+        .setCustomId("shop_close_session")
+        .setLabel("Close Shop")
         .setStyle(ButtonStyle.Danger)
     ),
   ];
@@ -3864,70 +3864,78 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
-      if (customId.startsWith("select_item:")) {
-        trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
+if (customId.startsWith("select_item:")) {
+  trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
 
-        const [, categoryId] = customId.split(":");
-        const sku = interaction.values[0];
+  const [, categoryId] = customId.split(":");
+  const sku = interaction.values[0];
 
-        const stockQty = await getStockForSku(sku);
-        if (stockQty <= 0) {
-          return interaction.update({
-            content: "That item is out of stock.",
-            components: await itemSelectComponents(categoryId),
-          });
-        }
+  const stockQty = await getStockForSku(sku);
+  if (stockQty <= 0) {
+    return interaction.update({
+      content: "That item is out of stock.",
+      components: await itemSelectComponents(categoryId),
+    });
+  }
 
-        const rows = [];
-        const maxQuickQty = Math.min(stockQty, 5);
-        const quickButtons = [];
+  const rows = [];
+  const maxQuickQty = Math.min(stockQty, 5);
+  const quickButtons = [];
 
-        for (let n = 1; n <= maxQuickQty; n += 1) {
-          quickButtons.push(
-            new ButtonBuilder()
-              .setCustomId(`add_qty:${categoryId}:${sku}:${n}`)
-              .setLabel(String(n))
-              .setStyle(ButtonStyle.Secondary)
-          );
-        }
+  for (let n = 1; n <= maxQuickQty; n += 1) {
+    quickButtons.push(
+      new ButtonBuilder()
+        .setCustomId(`add_qty:${categoryId}:${sku}:${n}`)
+        .setLabel(String(n))
+        .setStyle(ButtonStyle.Secondary)
+    );
+  }
 
-        if (quickButtons.length) {
-          rows.push(new ActionRowBuilder().addComponents(...quickButtons));
-        }
+  if (quickButtons.length) {
+    rows.push(new ActionRowBuilder().addComponents(...quickButtons));
+  }
 
-        rows.push(
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId(`add_qty_other:${categoryId}:${sku}`)
-              .setLabel("Other…")
-              .setStyle(ButtonStyle.Primary)
-              .setDisabled(stockQty <= 0),
-            new ButtonBuilder()
-              .setCustomId(`back_to_items:${categoryId}`)
-              .setLabel("Back to Items")
-              .setStyle(ButtonStyle.Secondary)
-          )
-        );
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`add_qty_other:${categoryId}:${sku}`)
+        .setLabel("Other…")
+        .setStyle(ButtonStyle.Primary)
+        .setDisabled(stockQty <= 0)
+    )
+  );
 
-        rows.push(
-          new ActionRowBuilder().addComponents(
-            new ButtonBuilder()
-              .setCustomId("browse_categories")
-              .setLabel("Back to Categories")
-              .setStyle(ButtonStyle.Secondary),
-            new ButtonBuilder()
-              .setCustomId("shop_view_cart")
-              .setLabel("View Basket")
-              .setStyle(ButtonStyle.Secondary)
-          )
-        );
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`back_to_items:${categoryId}`)
+        .setLabel("Back to Items")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("browse_categories")
+        .setLabel("Back to Categories")
+        .setStyle(ButtonStyle.Secondary)
+    )
+  );
 
-        return interaction.update({
-          content: `Selected item — how many? (In stock: ${stockQty})`,
-          components: rows,
-        });
-      }
-    }
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("shop_view_cart")
+        .setLabel("View Basket")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("shop_close_session")
+        .setLabel("Close Shop")
+        .setStyle(ButtonStyle.Danger)
+    )
+  );
+
+  return interaction.update({
+    content: `Selected item — how many? (In stock: ${stockQty})`,
+    components: rows,
+  });
+}
 
     /* ----------------------------- MODAL SUBMITS ------------------------- */
 
