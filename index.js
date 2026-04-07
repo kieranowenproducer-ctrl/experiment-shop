@@ -1640,8 +1640,9 @@ async function getCustomerLeadByUserId(userId) {
   return res.rows[0] || null;
 }
 
-async function getRecentCustomerLeads(limit = 10) {
-  const safeLimit = Math.max(1, Math.min(25, Number(limit || 10)));
+async function getRecentCustomerLeads(limit = 100, offset = 0) {
+  const safeLimit = Math.max(1, Math.min(100, Number(limit || 100)));
+  const safeOffset = Math.max(0, Number(offset || 0));
 
   const res = await pool.query(
     `
@@ -1664,1215 +1665,36 @@ async function getRecentCustomerLeads(limit = 10) {
     FROM customer_leads
     ORDER BY
       COALESCE(last_order_date, updated_at) DESC,
-      updated_at DESC
-    LIMIT $1
+      updated_at DESC,
+      discord_user_id ASC
+    LIMIT $1 OFFSET $2
     `,
-    [safeLimit]
+    [safeLimit, safeOffset]
   );
 
   return res.rows;
 }
 
-/* ------------------------------- CART HELPERS --------------------------- */
+async function getCustomerLeadCount() {
+  const res = await pool.query(`
+    SELECT COUNT(*)::int AS count
+    FROM customer_leads
+  `);
 
-async function getStockForSku(sku) {
-  const res = await pool.query(`SELECT stock_qty FROM stock_items WHERE sku = $1`, [sku]);
-  if (!res.rows.length) return 0;
-  return Number(res.rows[0].stock_qty || 0);
+  return Number(res.rows[0]?.count || 0);
 }
 
-async function getCartQtyForSku(userId, sku) {
-  const res = await pool.query(
-    `
-    SELECT COALESCE(SUM(ci.qty), 0) AS qty
-    FROM carts c
-    JOIN cart_items ci ON ci.cart_id = c.cart_id
-    WHERE c.user_id = $1 AND c.status = 'open' AND ci.sku = $2
-    `,
-    [userId, sku]
-  );
-  return Number(res.rows[0]?.qty || 0);
-}
-
-async function getOrCreateCart(userId) {
-  const existing = await pool.query(
-    `SELECT cart_id FROM carts WHERE user_id = $1 AND status = 'open'`,
-    [userId]
-  );
-
-  if (existing.rows.length) return existing.rows[0].cart_id;
-
-  const created = await pool.query(
-    `
-    INSERT INTO carts (user_id, status, discount_code, discount_percent, updated_at)
-    VALUES ($1, 'open', NULL, 0, NOW())
-    RETURNING cart_id
-    `,
-    [userId]
-  );
-
-  return created.rows[0].cart_id;
-}
-
-async function addCartItem(userId, item) {
-  const stockQty = await getStockForSku(item.sku);
-  const existingCartQty = await getCartQtyForSku(userId, item.sku);
-
-  if (existingCartQty + item.qty > stockQty) {
-    throw new Error(`Only ${stockQty} in stock for ${item.name}.`);
-  }
-
-  const cartId = await getOrCreateCart(userId);
-
-  await pool.query(
-    `
-    INSERT INTO cart_items (cart_id, sku, name, size, color, qty, price_pence)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    `,
-    [cartId, item.sku, item.name, item.size, item.color, item.qty, item.price_pence]
-  );
-}
-
-async function getCartSummary(userId) {
-  const cart = await pool.query(
-    `SELECT cart_id FROM carts WHERE user_id = $1 AND status = 'open'`,
-    [userId]
-  );
-
-  if (!cart.rows.length) return { items: [], subtotal_pence: 0 };
-
-  const cartId = cart.rows[0].cart_id;
-  const itemsRes = await pool.query(
-    `
-    SELECT sku, name, size, color, qty, price_pence
-    FROM cart_items
-    WHERE cart_id = $1
-    ORDER BY id ASC
-    `,
-    [cartId]
-  );
-
-  const items = itemsRes.rows;
-  const subtotal_pence = items.reduce((sum, it) => sum + it.qty * it.price_pence, 0);
-
-  return { items, subtotal_pence };
-}
-
-async function upsertProfile(
-  userId,
-  username,
-  fullName,
-  email,
-  phone,
-  shipping,
-  marketingConsentStatus = null,
-  marketingConsentSource = null
-) {
-  const cleanFullName = nullIfBlank(fullName);
-  const cleanEmail = nullIfBlank(email);
-  const cleanPhone = nullIfBlank(phone);
-  const cleanFullAddress = nullIfBlank(shipping?.full_address);
-  const cleanCountry = nullIfBlank(shipping?.country);
-
-  await pool.query(
-    `
-    INSERT INTO user_profiles (user_id, full_name, email, phone, updated_at)
-    VALUES ($1, $2, $3, $4, NOW())
-    ON CONFLICT (user_id) DO UPDATE
-    SET full_name = EXCLUDED.full_name,
-        email = EXCLUDED.email,
-        phone = EXCLUDED.phone,
-        updated_at = NOW()
-    `,
-    [userId, cleanFullName, cleanEmail, cleanPhone]
-  );
-
-  await pool.query(
-    `
-    INSERT INTO shipping_profiles (user_id, full_address, country, updated_at)
-    VALUES ($1, $2, $3, NOW())
-    ON CONFLICT (user_id) DO UPDATE
-    SET full_address = EXCLUDED.full_address,
-        country = EXCLUDED.country,
-        updated_at = NOW()
-    `,
-    [userId, cleanFullAddress, cleanCountry]
-  );
-
-  await upsertCustomerLeadProfile({
-    userId,
-    username,
-    fullName: cleanFullName,
-    email: cleanEmail,
-    phone: cleanPhone,
-    fullAddress: cleanFullAddress,
-    country: cleanCountry,
-    marketingConsentStatus,
-    marketingConsentTimestamp:
-      typeof marketingConsentStatus === "boolean" ? new Date() : null,
-    marketingConsentSource,
-  });
-}
-
-async function getUserShippingProfile(userId) {
-  const res = await pool.query(
-    `
-    SELECT up.full_name, up.email, up.phone, sp.full_address, sp.country
-    FROM user_profiles up
-    JOIN shipping_profiles sp ON sp.user_id = up.user_id
-    WHERE up.user_id = $1
-    `,
-    [userId]
-  );
-
-  return res.rows[0] || null;
-}
-
-async function clearCart(userId) {
-  const cart = await pool.query(
-    `SELECT cart_id FROM carts WHERE user_id = $1 AND status = 'open'`,
-    [userId]
-  );
-
-  if (!cart.rows.length) return;
-
-  const cartId = cart.rows[0].cart_id;
-
-  await pool.query(`DELETE FROM cart_items WHERE cart_id = $1`, [cartId]);
-  await pool.query(
-    `
-    UPDATE carts
-    SET discount_code = NULL,
-        discount_percent = 0,
-        updated_at = NOW()
-    WHERE cart_id = $1
-    `,
-    [cartId]
-  );
-}
-
-async function getCartDiscount(userId) {
-  const res = await pool.query(
-    `SELECT discount_code, discount_percent FROM carts WHERE user_id = $1 AND status = 'open'`,
-    [userId]
-  );
-
-  if (!res.rows.length) {
-    return { discount_code: null, discount_percent: 0 };
-  }
+function getCustomerLeadPageData(leads, page = 0, pageSize = 10) {
+  const totalPages = Math.max(1, Math.ceil(leads.length / pageSize));
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = safePage * pageSize;
+  const pageLeads = leads.slice(start, start + pageSize);
 
   return {
-    discount_code: res.rows[0].discount_code || null,
-    discount_percent: Number(res.rows[0].discount_percent || 0),
-  };
-}
-
-async function setCartDiscount(userId, code, percent) {
-  const cartId = await getOrCreateCart(userId);
-
-  await pool.query(
-    `
-    UPDATE carts
-    SET discount_code = $1,
-        discount_percent = $2,
-        updated_at = NOW()
-    WHERE cart_id = $3
-    `,
-    [normalizeDiscountCode(code), percent, cartId]
-  );
-}
-
-async function clearCartDiscount(userId) {
-  await pool.query(
-    `
-    UPDATE carts
-    SET discount_code = NULL,
-        discount_percent = 0,
-        updated_at = NOW()
-    WHERE user_id = $1 AND status = 'open'
-    `,
-    [userId]
-  );
-}
-
-async function hasUserPendingOrder(userId) {
-  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-  if (guild) {
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (member?.roles?.cache?.has(STAFF_ROLE_ID)) {
-      return false;
-    }
-  }
-
-  const res = await pool.query(
-    `
-    SELECT 1
-    FROM orders
-    WHERE user_id = $1
-      AND status IN ('pending', 'paid', 'dispatched')
-    LIMIT 1
-    `,
-    [userId]
-  );
-
-  return res.rows.length > 0;
-}
-
-async function buildCartMessage(userId, heading = "✅ **Added to basket.**") {
-  const cart = await getCartSummary(userId);
-  const profile = await getUserShippingProfile(userId);
-  const shippingPence = getShippingPenceForCountry(profile?.country);
-
-  const discount = await getCartDiscount(userId);
-  const totals = calculateDiscountedTotals(
-    cart.subtotal_pence,
-    shippingPence,
-    discount.discount_percent
-  );
-
-  const basketLines = [];
-  for (const it of cart.items) {
-    const stockQty = await getStockForSku(it.sku);
-    basketLines.push(
-      `• **${it.name}** (${it.size}, ${it.color}) × ${it.qty} — ${money(it.qty * it.price_pence)} _[Stock: ${stockQty}]_`
-    );
-  }
-
-  let content =
-    `${heading}\n\n` +
-    `**Your basket**\n` +
-    `${basketLines.join("\n") || "_No items_"}\n\n` +
-    `**Subtotal:** ${money(cart.subtotal_pence)}\n`;
-
-  if (totals.discountAmount > 0) {
-    content += `**Discount (${discount.discount_code}):** -${money(totals.discountAmount)}\n`;
-  }
-
-  content +=
-    `**Shipping:** ${money(shippingPence)}\n` +
-    `**Total:** ${money(totals.total)}`;
-
-  return content;
-}
-
-/* ------------------------------- RECEIPTS ------------------------------- */
-
-async function createReceiptChannel(guild, user, orderId) {
-  const category = await guild.channels.fetch(ORDERS_CATEGORY_ID).catch(() => null);
-
-  const name = safeChannelName(`order-${user.username}-${orderId}`);
-  const channel = await guild.channels.create({
-    name,
-    type: ChannelType.GuildText,
-    parent: category?.id || null,
-    permissionOverwrites: [
-      { id: guild.roles.everyone.id, deny: ["ViewChannel"] },
-      { id: user.id, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
-      { id: STAFF_ROLE_ID, allow: ["ViewChannel", "SendMessages", "ReadMessageHistory"] },
-      {
-        id: guild.members.me.id,
-        allow: ["ViewChannel", "SendMessages", "ReadMessageHistory", "ManageChannels"],
-      },
-    ],
-  });
-
-  return channel;
-}
-
-function receiptEmbed(
-  orderId,
-  items,
-  subtotal,
-  discountAmount,
-  discountCode,
-  shipping,
-  total,
-  shippingProfile,
-  status = "pending",
-  marketingConsentStatus = null
-) {
-  const lines = items.map(
-    (it) => `• **${it.name}** (${it.size}, ${it.color}) × ${it.qty} — ${money(it.qty * it.price_pence)}`
-  );
-
-  const fields = [
-    { name: "Status", value: status, inline: true },
-    { name: "Subtotal", value: money(subtotal), inline: true },
-  ];
-
-  if (discountAmount > 0) {
-    fields.push({
-      name: "Discount",
-      value: `${discountCode || "Code"} (-${money(discountAmount)})`,
-      inline: true,
-    });
-  }
-
-  fields.push(
-    { name: "Shipping", value: money(shipping), inline: true },
-    { name: "Total", value: money(total), inline: true },
-    {
-      name: "Shipping to",
-      value:
-        `${shippingProfile.full_name}\n` +
-        `${shippingProfile.email}\n` +
-        `${shippingProfile.phone}\n` +
-        `${shippingProfile.full_address}\n` +
-        `${shippingProfile.country}`,
-    },
-    {
-      name: "Marketing Consent",
-      value:
-        marketingConsentStatus === true
-          ? "Yes"
-          : marketingConsentStatus === false
-            ? "No"
-            : "Not recorded",
-      inline: true,
-    },
-    {
-      name: "Payment — Bank Transfer",
-      value:
-        `Please pay the **Total** via bank transfer using the details below.\n` +
-        `After payment, you must upload a **screenshot of payment** in this private order chat as evidence before your order can be shipped.\n` +
-        `Failure to provide payment proof may lead to delays.\n` +
-        `Use **only** your assigned order number as the bank transfer reference.\n` +
-        `Do **not** include product names, your name, or any other wording in the reference.\n` +
-        `Incorrect bank references may delay or cancel your order.\n` +
-        `Once paid, a staff member will confirm and mark the order as paid.\n\n` +
-        bankDetailsText(orderId),
-    },
-    { name: "Dispatch", value: "Cut-off: **15:30 (Mon–Fri Dispatch)**" }
-  );
-
-  return new EmbedBuilder()
-    .setTitle(`${STORE_NAME} — Receipt (Order #${orderId})`)
-    .setDescription(lines.join("\n") || "_No items_")
-    .addFields(fields)
-    .setFooter({ text: "Thank you for your order." });
-}
-
-function staffReceiptControls(orderId, status = "pending") {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`staff_mark_paid:${orderId}`)
-        .setLabel("Mark Paid")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(
-          status === "paid" ||
-            status === "dispatched" ||
-            status === "cancelled" ||
-            status === "completed"
-        ),
-      new ButtonBuilder()
-        .setCustomId(`staff_mark_dispatched:${orderId}`)
-        .setLabel("Mark Dispatched")
-        .setStyle(ButtonStyle.Primary)
-        .setDisabled(
-          status === "dispatched" ||
-            status === "cancelled" ||
-            status === "completed"
-        ),
-      new ButtonBuilder()
-        .setCustomId(`staff_complete_order:${orderId}`)
-        .setLabel("Complete")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(
-          status === "cancelled" ||
-            status === "completed" ||
-            status !== "dispatched"
-        )
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`staff_cancel_order:${orderId}`)
-        .setLabel("Cancel Order")
-        .setStyle(ButtonStyle.Danger)
-        .setDisabled(
-          status === "dispatched" ||
-            status === "cancelled" ||
-            status === "completed"
-        )
-    ),
-  ];
-}
-
-/* -------------------------------- MODALS -------------------------------- */
-
-function shippingModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("shipping_modal")
-    .setTitle("Shipping details");
-
-  const fullName = new TextInputBuilder()
-    .setCustomId("full_name")
-    .setLabel("Full name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const email = new TextInputBuilder()
-    .setCustomId("email")
-    .setLabel("Email")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const phone = new TextInputBuilder()
-    .setCustomId("phone")
-    .setLabel("Phone number")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const fullAddress = new TextInputBuilder()
-    .setCustomId("full_address")
-    .setLabel("Provide Full Address")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true);
-
-  const country = new TextInputBuilder()
-    .setCustomId("country")
-    .setLabel("Country")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(fullName),
-    new ActionRowBuilder().addComponents(email),
-    new ActionRowBuilder().addComponents(phone),
-    new ActionRowBuilder().addComponents(fullAddress),
-    new ActionRowBuilder().addComponents(country)
-  );
-
-  return modal;
-}
-
-function qtyOtherModal(categoryId, sku) {
-  const modal = new ModalBuilder()
-    .setCustomId(`qty_other_modal:${categoryId}:${sku}`)
-    .setTitle("Quantity");
-
-  const qty = new TextInputBuilder()
-    .setCustomId("qty")
-    .setLabel("Enter quantity (number)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(qty));
-  return modal;
-}
-
-function discountCodeModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("discount_code_modal")
-    .setTitle("Apply discount code");
-
-  const code = new TextInputBuilder()
-    .setCustomId("discount_code")
-    .setLabel("Enter discount code")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(code));
-  return modal;
-}
-
-function verifyModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("verify_submit_modal")
-    .setTitle("Verification Form");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("verify_name")
-    .setLabel("Full name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const foundInput = new TextInputBuilder()
-    .setCustomId("verify_found")
-    .setLabel("How did you hear about us?")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(true);
-
-  const referralInput = new TextInputBuilder()
-    .setCustomId("verify_referral")
-    .setLabel("Referral / who sent you")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const emailInput = new TextInputBuilder()
-    .setCustomId("verify_email")
-    .setLabel("Email address")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const phoneInput = new TextInputBuilder()
-    .setCustomId("verify_phone")
-    .setLabel("Phone number")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(nameInput),
-    new ActionRowBuilder().addComponents(foundInput),
-    new ActionRowBuilder().addComponents(referralInput),
-    new ActionRowBuilder().addComponents(emailInput),
-    new ActionRowBuilder().addComponents(phoneInput)
-  );
-
-  return modal;
-}
-
-function productRequestModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("product_request_modal")
-    .setTitle("Request a Product");
-
-  const productInput = new TextInputBuilder()
-    .setCustomId("requested_product")
-    .setLabel("What product would you like to see?")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const notesInput = new TextInputBuilder()
-    .setCustomId("extra_notes")
-    .setLabel("Extra details")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setPlaceholder("Optional: size, colour, brand, style, flavour, variation, etc.");
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(productInput),
-    new ActionRowBuilder().addComponents(notesInput)
-  );
-
-  return modal;
-}
-
-function staffOrderLookupModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_orderlookup_modal")
-    .setTitle("Lookup Order");
-
-  const orderIdInput = new TextInputBuilder()
-    .setCustomId("lookup_order_id")
-    .setLabel("Order ID")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(orderIdInput));
-  return modal;
-}
-
-function staffCustomerLookupModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_customer_lookup_modal")
-    .setTitle("Lookup Customer / Lead");
-
-  const lookupInput = new TextInputBuilder()
-    .setCustomId("lookup_customer_value")
-    .setLabel("Discord user ID, email, phone or username")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(lookupInput));
-  return modal;
-}
-
-function staffCreateDiscountModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_create_discount_modal")
-    .setTitle("Create Discount Code");
-
-  const codeInput = new TextInputBuilder()
-    .setCustomId("discount_code")
-    .setLabel("Discount code")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const percentInput = new TextInputBuilder()
-    .setCustomId("discount_percent")
-    .setLabel("Discount percent")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(codeInput),
-    new ActionRowBuilder().addComponents(percentInput)
-  );
-
-  return modal;
-}
-
-function staffToggleDiscountModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_toggle_discount_modal")
-    .setTitle("Toggle Discount Code");
-
-  const codeInput = new TextInputBuilder()
-    .setCustomId("discount_code")
-    .setLabel("Discount code")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  const activeInput = new TextInputBuilder()
-    .setCustomId("discount_active")
-    .setLabel("Type active or inactive")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(codeInput),
-    new ActionRowBuilder().addComponents(activeInput)
-  );
-
-  return modal;
-}
-
-function staffAddCategoryModal() {
-  const modal = new ModalBuilder()
-    .setCustomId("staff_add_category_modal")
-    .setTitle("Add Category");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("category_name")
-    .setLabel("Category name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true);
-
-  modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
-  return modal;
-}
-
-function staffRenameCategoryModal(categoryId, currentName) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_rename_category_modal:${categoryId}`)
-    .setTitle("Rename Category");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("new_category_name")
-    .setLabel("New category name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue(String(currentName || "").slice(0, 4000));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
-  return modal;
-}
-
-function staffAddProductModal(categoryId, categoryName) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_add_product_modal:${categoryId}`)
-    .setTitle("Add Product");
-
-  const skuInput = new TextInputBuilder()
-    .setCustomId("sku")
-    .setLabel("SKU")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: NEW001");
-
-  const nameInput = new TextInputBuilder()
-    .setCustomId("product_name")
-    .setLabel("Product name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder(`Category: ${safeText(categoryName)}`);
-
-  const priceInput = new TextInputBuilder()
-    .setCustomId("price_gbp")
-    .setLabel("Price (GBP)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 19.99");
-
-  const stockInput = new TextInputBuilder()
-    .setCustomId("stock_qty")
-    .setLabel("Starting stock")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 10");
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(skuInput),
-    new ActionRowBuilder().addComponents(nameInput),
-    new ActionRowBuilder().addComponents(priceInput),
-    new ActionRowBuilder().addComponents(stockInput)
-  );
-
-  return modal;
-}
-
-function staffEditPriceModal(sku, currentPricePence) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_edit_price_modal:${sku}`)
-    .setTitle("Change Price");
-
-  const input = new TextInputBuilder()
-    .setCustomId("price_gbp")
-    .setLabel("Price (GBP)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue(String((Number(currentPricePence || 0) / 100).toFixed(2)));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
-function staffStockQtyModal(sku, label) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_stock_qty_modal:${sku}`)
-    .setTitle("Update Stock");
-
-  const qtyInput = new TextInputBuilder()
-    .setCustomId("stock_qty")
-    .setLabel("New stock quantity")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder(safeText(label || sku));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
-
-  return modal;
-}
-
-function staffRenameProductModal(sku, currentName) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_rename_product_modal:${sku}`)
-    .setTitle("Rename Product");
-
-  const input = new TextInputBuilder()
-    .setCustomId("new_product_name")
-    .setLabel("New product name")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue(String(currentName || "").slice(0, 4000));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
-function staffMemberSearchModal(action, title) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_member_search_modal:${action}`)
-    .setTitle(title);
-
-  const input = new TextInputBuilder()
-    .setCustomId("member_search")
-    .setLabel("Search by name, username or ID")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: james");
-
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
-function staffTimeoutModal(userId, label) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_timeout_modal:${userId}`)
-    .setTitle("Timeout Member");
-
-  const minutesInput = new TextInputBuilder()
-    .setCustomId("timeout_minutes")
-    .setLabel("Timeout (minutes)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 60");
-
-  const reasonInput = new TextInputBuilder()
-    .setCustomId("timeout_reason")
-    .setLabel("Reason")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setPlaceholder(safeText(label || userId));
-
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(minutesInput),
-    new ActionRowBuilder().addComponents(reasonInput)
-  );
-
-  return modal;
-}
-
-function staffBanModal(userId, label) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_ban_modal:${userId}`)
-    .setTitle("Ban Member");
-
-  const reasonInput = new TextInputBuilder()
-    .setCustomId("ban_reason")
-    .setLabel("Reason")
-    .setStyle(TextInputStyle.Paragraph)
-    .setRequired(false)
-    .setPlaceholder(safeText(label || userId));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
-
-  return modal;
-}
-
-/* ----------------------------- SHOP UI HELPERS -------------------------- */
-
-function cartActionsComponents(disableSubmit = false) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("cart_discount")
-        .setLabel("Discount Code")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("cart_clear")
-        .setLabel("Clear Cart")
-        .setStyle(ButtonStyle.Danger),
-      new ButtonBuilder()
-        .setCustomId("cart_submit")
-        .setLabel("Submit Order")
-        .setStyle(ButtonStyle.Success)
-        .setDisabled(disableSubmit)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("browse_categories")
-        .setLabel("Back to Categories")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("shop_close_session")
-        .setLabel("Close Shop")
-        .setStyle(ButtonStyle.Danger)
-    ),
-  ];
-}
-
-async function categorySelectComponents() {
-  const categories = await getCategories();
-
-  const safeOptions = categories.slice(0, 25).map((cat) => ({
-    label: truncate100(cat.category_name),
-    value: String(cat.category_id),
-  }));
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId("select_category")
-        .setPlaceholder("Choose a category…")
-        .addOptions(safeOptions)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("shop_view_cart")
-        .setLabel("View Basket")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("shop_close_session")
-        .setLabel("Close Shop")
-        .setStyle(ButtonStyle.Danger)
-    ),
-  ];
-}
-
-async function itemSelectComponents(categoryId) {
-  const items = (await getProductsByCategoryId(categoryId)).slice(0, 25);
-
-  if (!items.length) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("browse_categories")
-          .setLabel("Back to Categories")
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId("shop_view_cart")
-          .setLabel("View Basket")
-          .setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder()
-          .setCustomId("shop_close_session")
-          .setLabel("Close Shop")
-          .setStyle(ButtonStyle.Danger)
-      ),
-    ];
-  }
-
-  const options = items.map((it) => ({
-    label: truncate100(it.product_name),
-    value: truncate100(it.sku),
-    description: shopItemDescription(it),
-  }));
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(`select_item:${categoryId}`)
-        .setPlaceholder("Choose a product…")
-        .addOptions(options)
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("browse_categories")
-        .setLabel("Back to Categories")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("shop_view_cart")
-        .setLabel("View Basket")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("shop_close_session")
-        .setLabel("Close Shop")
-        .setStyle(ButtonStyle.Danger)
-    ),
-  ];
-}
-
-function menuMessageComponents() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("open_menu")
-        .setLabel("Click to see our menu")
-        .setStyle(ButtonStyle.Primary)
-    ),
-  ];
-}
-
-function verifyPanelComponents() {
-  const embed = new EmbedBuilder()
-    .setTitle("Server Verification")
-    .setDescription(
-      [
-        "To access the full server, click the button below and complete the form.",
-        "",
-        "All fields are required:",
-        "• Full name",
-        "• How you heard about us",
-        "• Referral / who sent you",
-        "• Email address",
-        "• Phone number",
-      ].join("\n")
-    );
-
-  const row = new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("verify_open_modal")
-      .setLabel("Verify")
-      .setStyle(ButtonStyle.Success)
-  );
-
-  return { embed, row };
-}
-
-function verifyApproveComponents(userId) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`verify_approve:${userId}`)
-        .setLabel("Approve")
-        .setStyle(ButtonStyle.Success)
-    ),
-  ];
-}
-
-function productRequestPanelComponents() {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("product_request_open")
-        .setLabel("Request a Product")
-        .setStyle(ButtonStyle.Primary)
-    ),
-  ];
-}
-
-async function staffCategorySelect(
-  customId,
-  placeholder = "Choose a category…",
-  backId = "staff_panel_home",
-  backLabel = "Back"
-) {
-  const categories = await getCategories();
-
-  if (!categories.length) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("staff_noop")
-          .setLabel("No categories available")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(backId)
-          .setLabel(backLabel)
-          .setStyle(ButtonStyle.Secondary)
-      ),
-    ];
-  }
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(customId)
-        .setPlaceholder(placeholder)
-        .addOptions(
-          categories.slice(0, 25).map((cat) => ({
-            label: truncate100(cat.category_name),
-            value: String(cat.category_id),
-          }))
-        )
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(backId)
-        .setLabel(backLabel)
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-}
-
-async function staffProductSelectByCategory(
-  customId,
-  categoryId,
-  placeholder = "Choose a product…",
-  backId = "staff_panel_home",
-  backLabel = "Back"
-) {
-  const products = await getProductsByCategoryId(categoryId);
-
-  if (!products.length) {
-    return [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId("staff_noop")
-          .setLabel("No products in this category")
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(backId)
-          .setLabel(backLabel)
-          .setStyle(ButtonStyle.Secondary)
-      ),
-    ];
-  }
-
-  return [
-    new ActionRowBuilder().addComponents(
-      new StringSelectMenuBuilder()
-        .setCustomId(customId)
-        .setPlaceholder(placeholder)
-        .addOptions(
-          products.slice(0, 25).map((p) => ({
-            label: truncate100(p.product_name),
-            description: truncate100(`${money(p.price_pence)} • SKU ${p.sku}`),
-            value: truncate100(p.sku),
-          }))
-        )
-    ),
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(backId)
-        .setLabel(backLabel)
-        .setStyle(ButtonStyle.Secondary)
-    ),
-  ];
-}
-
-function navRow() {
-  return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId("staff_panel_home")
-      .setLabel("⬅ Back")
-      .setStyle(ButtonStyle.Secondary)
-  );
-}
-
-function staffMainPanel() {
-  return {
-    content: `**Staff Panel**\nSelect a section:`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_nav_orders").setLabel("Orders").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_nav_customers").setLabel("Customers").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_nav_products").setLabel("Products").setStyle(ButtonStyle.Success)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_nav_categories").setLabel("Categories").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_nav_stock").setLabel("Stock").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_nav_discounts").setLabel("Discounts").setStyle(ButtonStyle.Secondary)
-      ),
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_nav_moderation").setLabel("Moderation").setStyle(ButtonStyle.Danger)
-      ),
-    ],
-  };
-}
-
-function staffProductsPanel() {
-  return {
-    content: `🟢 **Products**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_add_product").setLabel("Add").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_edit_product").setLabel("Edit").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_move_product").setLabel("Move").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_delete_product").setLabel("Delete").setStyle(ButtonStyle.Danger)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffCategoriesPanel() {
-  return {
-    content: `🟢 **Categories**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_add_category").setLabel("Add").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_rename_category").setLabel("Rename").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_delete_category").setLabel("Delete").setStyle(ButtonStyle.Danger)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffStockPanel() {
-  return {
-    content: `🟢 **Stock**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_adjust_stock").setLabel("Adjust").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_view_all_stock").setLabel("View All Stock").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_restock_all").setLabel("Restock All").setStyle(ButtonStyle.Danger)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffDiscountPanel() {
-  return {
-    content: `⚪ **Discounts**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_create_discount").setLabel("Create").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("staff_toggle_discount").setLabel("Toggle").setStyle(ButtonStyle.Secondary)
-      ),
-      navRow(),
-    ],
-  };
-}
-
-function staffOrdersPanel() {
-  return {
-    content: `🔵 **Orders**`,
-    components: [
-      new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_lookup_order").setLabel("Lookup Order").setStyle(ButtonStyle.Primary)
-      ),
-      navRow(),
-    ],
+    totalPages,
+    safePage,
+    start,
+    pageLeads,
   };
 }
 
@@ -2895,12 +1717,16 @@ function buildCustomerLeadLookupEmbed(lead) {
       { name: "Phone", value: lead.phone || "Unknown", inline: true },
       {
         name: "First Order Date",
-        value: lead.first_order_date ? `<t:${Math.floor(new Date(lead.first_order_date).getTime() / 1000)}:F>` : "None",
+        value: lead.first_order_date
+          ? `<t:${Math.floor(new Date(lead.first_order_date).getTime() / 1000)}:F>`
+          : "None",
         inline: true,
       },
       {
         name: "Last Order Date",
-        value: lead.last_order_date ? `<t:${Math.floor(new Date(lead.last_order_date).getTime() / 1000)}:F>` : "None",
+        value: lead.last_order_date
+          ? `<t:${Math.floor(new Date(lead.last_order_date).getTime() / 1000)}:F>`
+          : "None",
         inline: true,
       },
       {
@@ -2928,21 +1754,104 @@ function buildCustomerLeadLookupEmbed(lead) {
     .setTimestamp(new Date(lead.updated_at || Date.now()));
 }
 
-function buildRecentCustomerLeadsEmbed(leads) {
-  const description = leads.length
-    ? leads
-        .map((lead, index) => {
-          const displayName = lead.full_name || lead.username || lead.discord_user_id;
-          const email = lead.email || "No email";
-          const orders = Number(lead.total_orders || 0);
-          return `${index + 1}. **${displayName}** • ${email} • Orders: ${orders}`;
-        })
-        .join("\n")
-    : "_No customer or lead records found_";
+function buildCustomerLeadListEmbed(leads, page = 0) {
+  const { totalPages, safePage, start, pageLeads } = getCustomerLeadPageData(leads, page, 10);
+
+  const lines = pageLeads.map((lead, index) => {
+    const position = start + index + 1;
+    const displayName = lead.full_name || lead.username || lead.discord_user_id || "Unknown";
+    const email = lead.email || "No email";
+    const phone = lead.phone || "No phone";
+    const consent =
+      lead.marketing_consent_status === true
+        ? "Consent: Yes"
+        : lead.marketing_consent_status === false
+          ? "Consent: No"
+          : "Consent: Not recorded";
+
+    return (
+      `${position}. **${displayName}**\n` +
+      `Email: ${email}\n` +
+      `Phone: ${phone}\n` +
+      `${consent}\n` +
+      `Orders: ${Number(lead.total_orders || 0)}`
+    );
+  });
 
   return new EmbedBuilder()
-    .setTitle("Recent Customers / Leads")
-    .setDescription(description);
+    .setTitle("Customers / Leads")
+    .setDescription(lines.join("\n\n") || "_No customer or lead records found_")
+    .addFields(
+      { name: "Results", value: String(leads.length), inline: true },
+      { name: "Page", value: `${safePage + 1}/${totalPages}`, inline: true }
+    );
+}
+
+function buildCustomerLeadListSelectMenu(leads, page = 0) {
+  const { pageLeads, safePage } = getCustomerLeadPageData(leads, page, 10);
+
+  if (!pageLeads.length) return null;
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`staff_customer_list_select:${safePage}`)
+      .setPlaceholder("Select a customer / lead…")
+      .addOptions(
+        pageLeads.map((lead) => ({
+          label: truncate100(lead.full_name || lead.username || lead.discord_user_id || "Unknown"),
+          description: truncate100(
+            `${lead.email || "No email"} • ${lead.phone || "No phone"} • Orders ${Number(lead.total_orders || 0)}`
+          ),
+          value: lead.discord_user_id,
+        }))
+      )
+  );
+}
+
+function buildCustomerLeadListComponents(leads, page = 0) {
+  const { totalPages, safePage } = getCustomerLeadPageData(leads, page, 10);
+  const rows = [];
+
+  const selectRow = buildCustomerLeadListSelectMenu(leads, safePage);
+  if (selectRow) rows.push(selectRow);
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`staff_customer_list_prev:${safePage}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage <= 0),
+      new ButtonBuilder()
+        .setCustomId(`staff_customer_list_next:${safePage}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage >= totalPages - 1),
+      new ButtonBuilder()
+        .setCustomId(`staff_customer_list_refresh:${safePage}`)
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Primary)
+    )
+  );
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("staff_lookup_customer")
+        .setLabel("Lookup")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("staff_panel_home")
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary)
+    )
+  );
+
+  return rows;
+}
+
+function buildRecentCustomerLeadsEmbed(leads) {
+  return buildCustomerLeadListEmbed(leads, 0);
 }
 
 function staffCustomersPanel() {
@@ -2950,8 +1859,8 @@ function staffCustomersPanel() {
     content: `🟣 **Customers / Leads**`,
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_lookup_customer").setLabel("Lookup").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_recent_customers").setLabel("Recent").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("staff_recent_customers").setLabel("View All").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_lookup_customer").setLabel("Lookup").setStyle(ButtonStyle.Secondary)
       ),
       navRow(),
     ],
@@ -3370,8 +2279,7 @@ client.on("interactionCreate", async (interaction) => {
             "You can continue from your private shop channel below.",
           components: [
             ...interaction.message.components.filter(
-              (row) =>
-                row.components?.some((c) => c.style === ButtonStyle.Link)
+              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
             ),
           ],
         });
@@ -3386,8 +2294,7 @@ client.on("interactionCreate", async (interaction) => {
             "You can continue from your private shop channel below.",
           components: [
             ...interaction.message.components.filter(
-              (row) =>
-                row.components?.some((c) => c.style === ButtonStyle.Link)
+              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
             ),
           ],
         });
@@ -3400,8 +2307,7 @@ client.on("interactionCreate", async (interaction) => {
             "You can continue from your private shop channel below.",
           components: [
             ...interaction.message.components.filter(
-              (row) =>
-                row.components?.some((c) => c.style === ButtonStyle.Link)
+              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
             ),
           ],
         });
@@ -3586,12 +2492,38 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (customId === "staff_recent_customers") {
-        const leads = await getRecentCustomerLeads(10);
+        const leads = await getRecentCustomerLeads(100, 0);
 
         return interaction.update({
-          content: "Recent customers / leads:",
-          embeds: [buildRecentCustomerLeadsEmbed(leads)],
-          components: [navRow()],
+          content: "Customers / leads list:",
+          embeds: [buildCustomerLeadListEmbed(leads, 0)],
+          components: buildCustomerLeadListComponents(leads, 0),
+        });
+      }
+
+      if (
+        customId.startsWith("staff_customer_list_prev:") ||
+        customId.startsWith("staff_customer_list_next:") ||
+        customId.startsWith("staff_customer_list_refresh:")
+      ) {
+        const currentPage = parseInt(customId.split(":")[1], 10) || 0;
+        const leads = await getRecentCustomerLeads(100, 0);
+
+        let newPage = currentPage;
+
+        if (customId.startsWith("staff_customer_list_prev:")) {
+          newPage = Math.max(0, currentPage - 1);
+        }
+
+        if (customId.startsWith("staff_customer_list_next:")) {
+          const totalPages = Math.max(1, Math.ceil(leads.length / 10));
+          newPage = Math.min(totalPages - 1, currentPage + 1);
+        }
+
+        return interaction.update({
+          content: "Customers / leads list:",
+          embeds: [buildCustomerLeadListEmbed(leads, newPage)],
+          components: buildCustomerLeadListComponents(leads, newPage),
         });
       }
 
@@ -4603,6 +3535,36 @@ client.on("interactionCreate", async (interaction) => {
             staffBanModal(targetMember.id, targetMember.displayName || targetMember.user.username)
           );
         }
+      }
+
+      if (customId.startsWith("staff_customer_list_select:")) {
+        const discordUserId = interaction.values[0];
+        const lead = await getCustomerLeadByUserId(discordUserId);
+
+        if (!lead) {
+          return interaction.update({
+            content: "Customer / lead not found.",
+            embeds: [],
+            components: [navRow()],
+          });
+        }
+
+        return interaction.update({
+          content: "Customer / lead details:",
+          embeds: [buildCustomerLeadLookupEmbed(lead)],
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId("staff_recent_customers")
+                .setLabel("Back to List")
+                .setStyle(ButtonStyle.Secondary),
+              new ButtonBuilder()
+                .setCustomId("staff_panel_home")
+                .setLabel("Back")
+                .setStyle(ButtonStyle.Secondary)
+            ),
+          ],
+        });
       }
 
       /* ---------------------------- SHOP MENUS ---------------------------- */
