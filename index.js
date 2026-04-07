@@ -366,6 +366,32 @@ async function warmMemberCache(guild) {
   }
 }
 
+function splitLongMessage(content, maxLength = 1900) {
+  const text = String(content || "");
+  if (!text) return ["_No content_"];
+  if (text.length <= maxLength) return [text];
+
+  const chunks = [];
+  let current = "";
+
+  for (const line of text.split("\n")) {
+    if (!current.length) {
+      current = line;
+      continue;
+    }
+
+    if ((current + "\n" + line).length <= maxLength) {
+      current += `\n${line}`;
+    } else {
+      chunks.push(current);
+      current = line;
+    }
+  }
+
+  if (current.length) chunks.push(current);
+  return chunks;
+}
+
 /* -------------------------- MODERATION HELPERS -------------------------- */
 
 async function searchGuildMembers(guild, search, options = {}) {
@@ -997,6 +1023,45 @@ async function getProductBySku(sku) {
   return res.rows[0] || null;
 }
 
+async function getAllProductsWithStockOverview() {
+  const res = await pool.query(`
+    SELECT
+      c.category_name,
+      p.product_name,
+      p.sku,
+      COALESCE(s.stock_qty, 0) AS stock_qty
+    FROM products p
+    JOIN categories c ON c.category_id = p.category_id
+    LEFT JOIN stock_items s ON s.sku = p.sku
+    WHERE p.is_active = TRUE
+    ORDER BY COALESCE(s.stock_qty, 0) ASC, c.category_name ASC, p.product_name ASC, p.sku ASC
+  `);
+
+  return res.rows;
+}
+
+function buildStockOverviewMessages(rows) {
+  if (!rows.length) {
+    return ["No active products were found in the catalogue."];
+  }
+
+  const header =
+    `**Stock Overview**\n` +
+    `Sorted by lowest stock first.\n\n`;
+
+  const lines = rows.map((row, index) => {
+    return (
+      `${index + 1}. ` +
+      `**Category:** ${row.category_name}\n` +
+      `**Product:** ${row.product_name}\n` +
+      `**SKU:** \`${row.sku}\`\n` +
+      `**Current Stock:** ${Number(row.stock_qty || 0)}`
+    );
+  });
+
+  return splitLongMessage(header + lines.join("\n\n"));
+}
+
 async function createProduct({ categoryId, sku, productName, pricePence, stockQty }) {
   const cleanSku = String(sku || "").trim().toUpperCase();
   const cleanName = String(productName || "").trim();
@@ -1425,8 +1490,18 @@ async function clearCart(userId) {
   if (!cart.rows.length) return;
 
   const cartId = cart.rows[0].cart_id;
+
   await pool.query(`DELETE FROM cart_items WHERE cart_id = $1`, [cartId]);
-  await pool.query(`DELETE FROM carts WHERE cart_id = $1`, [cartId]);
+  await pool.query(
+    `
+    UPDATE carts
+    SET discount_code = NULL,
+        discount_percent = 0,
+        updated_at = NOW()
+    WHERE cart_id = $1
+    `,
+    [cartId]
+  );
 }
 
 async function getCartDiscount(userId) {
@@ -1603,6 +1678,9 @@ function receiptEmbed(
         `Please pay the **Total** via bank transfer using the details below.\n` +
         `After payment, you must upload a **screenshot of payment** in this private order chat as evidence before your order can be shipped.\n` +
         `Failure to provide payment proof may lead to delays.\n` +
+        `Use **only** your assigned order number as the bank transfer reference.\n` +
+        `Do **not** include product names, your name, or any other wording in the reference.\n` +
+        `Incorrect bank references may delay or cancel your order.\n` +
         `Once paid, a staff member will confirm and mark the order as paid.\n\n` +
         bankDetailsText(orderId),
     },
@@ -1956,18 +2034,14 @@ function staffEditPriceModal(sku, currentPricePence) {
     .setCustomId(`staff_edit_price_modal:${sku}`)
     .setTitle("Change Price");
 
-  const priceInput = new TextInputBuilder()
+  const input = new TextInputBuilder()
     .setCustomId("price_gbp")
     .setLabel("Price (GBP)")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
-    .setValue((Number(currentPricePence || 0) / 100).toFixed(2))
-    .setPlaceholder("Example: 19.99");
+    .setValue(String((Number(currentPricePence || 0) / 100).toFixed(2)));
 
-  modal.addComponents(
-    new ActionRowBuilder().addComponents(priceInput)
-  );
-
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
   return modal;
 }
 
@@ -1999,22 +2073,6 @@ function staffRenameProductModal(sku, currentName) {
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setValue(String(currentName || "").slice(0, 4000));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(input));
-  return modal;
-}
-
-function staffEditPriceModal(sku, currentPricePence) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_edit_price_modal:${sku}`)
-    .setTitle("Change Price");
-
-  const input = new TextInputBuilder()
-    .setCustomId("price_gbp")
-    .setLabel("Price (GBP)")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue(String((Number(currentPricePence || 0) / 100).toFixed(2)));
 
   modal.addComponents(new ActionRowBuilder().addComponents(input));
   return modal;
@@ -2409,6 +2467,7 @@ function staffStockPanel() {
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("staff_adjust_stock").setLabel("Adjust").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_view_all_stock").setLabel("View All Stock").setStyle(ButtonStyle.Primary),
         new ButtonBuilder().setCustomId("staff_restock_all").setLabel("Restock All").setStyle(ButtonStyle.Danger)
       ),
       navRow(),
@@ -2959,6 +3018,30 @@ client.on("interactionCreate", async (interaction) => {
         });
       }
 
+      if (customId === "staff_view_all_stock") {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        await interaction.deferReply({ flags: 64 });
+
+        const rows = await getAllProductsWithStockOverview();
+        const messages = buildStockOverviewMessages(rows);
+
+        await interaction.editReply({
+          content: messages[0],
+        });
+
+        for (let i = 1; i < messages.length; i += 1) {
+          await interaction.followUp({
+            content: messages[i],
+            flags: 64,
+          });
+        }
+
+        return;
+      }
+
       if (customId === "staff_restock_all") {
         return interaction.update({
           content: "Are you sure you want to restock all items back to their default values?",
@@ -3274,22 +3357,14 @@ client.on("interactionCreate", async (interaction) => {
         trackCartUiMessage(interaction.user.id, interaction.channel.id, interaction.message.id);
 
         await clearCart(interaction.user.id);
-        await clearCartDiscount(interaction.user.id);
 
-        await interaction.update({
-          content: "🗑️ Your cart has been cleared. This shop channel will now close.",
-          components: [],
+        return interaction.update({
+          content:
+            "🗑️ **Basket cleared**\n\n" +
+            "All items have been removed and any applied discount code has been reset.\n" +
+            "You can continue shopping below:",
+          components: await categorySelectComponents(),
         });
-
-        setTimeout(async () => {
-          await destroyShopSessionByChannel(
-            interaction.channel,
-            interaction.user.id,
-            "Cart cleared and shop closed"
-          );
-        }, 1500);
-
-        return;
       }
 
       if (customId === "cart_submit") {
@@ -3436,7 +3511,9 @@ client.on("interactionCreate", async (interaction) => {
               `<@${interaction.user.id}> **Thanks!** Your order has been received.\n\n` +
               `✅ Please pay by **bank transfer** using the details in the receipt below.\n` +
               `✅ After payment, upload a **screenshot of payment** in this private order chat before your order can be shipped.\n` +
-              `⚠️ Failure to provide payment proof may lead to delays.\n\n` +
+              `⚠️ Use **only** your assigned order number as the bank transfer reference.\n` +
+              `⚠️ Do not include product names or any other wording in the reference.\n` +
+              `⚠️ Incorrect bank references may delay or cancel your order.\n\n` +
               `<@&${STAFF_ROLE_ID}> once confirmed, please mark as paid or dispatched when appropriate.`,
             embeds: [
               receiptEmbed(
@@ -3477,7 +3554,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-      /* ---------------------------- ORDER ACTIONS ------------------------- */
+          /* ---------------------------- ORDER ACTIONS ------------------------- */
 
       if (customId.startsWith("staff_mark_paid:")) {
         const [, orderIdStr] = customId.split(":");
@@ -4632,7 +4709,8 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
     }
-  } catch (err) {
+
+    } catch (err) {
     console.error(err);
 
     if (!interaction.isRepliable()) return;
