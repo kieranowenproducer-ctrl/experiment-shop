@@ -206,11 +206,11 @@ function money(pence) {
 }
 
 function isStaff(member) {
-  return member?.roles?.cache?.has(STAFF_ROLE_ID);
+  return Boolean(member?.roles?.cache?.has(STAFF_ROLE_ID));
 }
 
 function isVerifiedMember(member) {
-  return member?.roles?.cache?.has(VERIFIED_ROLE_ID);
+  return Boolean(member?.roles?.cache?.has(VERIFIED_ROLE_ID));
 }
 
 function safeChannelName(str) {
@@ -228,6 +228,10 @@ function normalizeDiscountCode(code) {
 
 function truncate100(str) {
   return String(str || "").slice(0, 100);
+}
+
+function safeText(str, max = 80) {
+  return String(str || "").slice(0, max);
 }
 
 function parsePriceToPence(input) {
@@ -251,7 +255,7 @@ function calculateDiscountedTotals(subtotal, shipping, discountPercent) {
 
 function isSubmitLocked(userId) {
   const expiresAt = SUBMIT_LOCKS.get(userId);
-  return expiresAt && expiresAt > Date.now();
+  return Boolean(expiresAt && expiresAt > Date.now());
 }
 
 function setSubmitLock(userId) {
@@ -628,6 +632,84 @@ function buildMemberDetailComponents(member, view, page = 0) {
 
 /* ------------------------------- INIT DB -------------------------------- */
 
+async function seedOrRepairCatalog() {
+  for (const [categoryName, items] of Object.entries(SAFE_SEED_CATALOG)) {
+    let categoryRes = await pool.query(
+      `SELECT category_id FROM categories WHERE category_name = $1 LIMIT 1`,
+      [categoryName]
+    );
+
+    let categoryId;
+
+    if (!categoryRes.rows.length) {
+      const maxRes = await pool.query(
+        `SELECT COALESCE(MAX(sort_order), 0) AS max_sort FROM categories`
+      );
+      const nextSort = Number(maxRes.rows[0]?.max_sort || 0) + 1;
+
+      const createdCategory = await pool.query(
+        `
+        INSERT INTO categories (category_name, sort_order, is_active, created_at, updated_at)
+        VALUES ($1, $2, TRUE, NOW(), NOW())
+        RETURNING category_id
+        `,
+        [categoryName, nextSort]
+      );
+
+      categoryId = createdCategory.rows[0].category_id;
+    } else {
+      categoryId = categoryRes.rows[0].category_id;
+    }
+
+    for (const item of items) {
+      await pool.query(
+        `
+        INSERT INTO products (
+          category_id,
+          sku,
+          product_name,
+          price_pence,
+          default_stock_qty,
+          is_active,
+          created_at,
+          updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
+        ON CONFLICT (sku) DO NOTHING
+        `,
+        [categoryId, item.sku, item.name, item.price_pence, item.stock_qty]
+      );
+
+      await pool.query(
+        `
+        INSERT INTO stock_items (sku, stock_qty, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (sku) DO NOTHING
+        `,
+        [item.sku, item.stock_qty]
+      );
+    }
+  }
+
+  const missingStockRes = await pool.query(`
+    SELECT p.sku, p.default_stock_qty
+    FROM products p
+    LEFT JOIN stock_items s ON s.sku = p.sku
+    WHERE s.sku IS NULL
+  `);
+
+  for (const row of missingStockRes.rows) {
+    await pool.query(
+      `
+      INSERT INTO stock_items (sku, stock_qty, updated_at)
+      VALUES ($1, $2, NOW())
+      ON CONFLICT (sku) DO NOTHING
+      `,
+      [row.sku, row.default_stock_qty]
+    );
+  }
+}
+
 async function initDb() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS user_profiles (
@@ -783,112 +865,7 @@ async function initDb() {
     [normalizeDiscountCode(WELCOME_CODE), WELCOME_DISCOUNT_PERCENT]
   );
 
-  const categoryCountRes = await pool.query(`SELECT COUNT(*)::int AS count FROM categories`);
-  const categoryCount = Number(categoryCountRes.rows[0]?.count || 0);
-
-  if (categoryCount === 0) {
-    let sort = 1;
-
-    for (const [categoryName, items] of Object.entries(SAFE_SEED_CATALOG)) {
-      const catRes = await pool.query(
-        `
-        INSERT INTO categories (category_name, sort_order, is_active, created_at, updated_at)
-        VALUES ($1, $2, TRUE, NOW(), NOW())
-        RETURNING category_id
-        `,
-        [categoryName, sort]
-      );
-
-      const categoryId = catRes.rows[0].category_id;
-      sort += 1;
-
-      for (const item of items) {
-        await pool.query(
-          `
-          INSERT INTO products (category_id, sku, product_name, price_pence, default_stock_qty, is_active, created_at, updated_at)
-          VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
-          `,
-          [categoryId, item.sku, item.name, item.price_pence, item.stock_qty]
-        );
-
-        await pool.query(
-          `
-          INSERT INTO stock_items (sku, stock_qty, updated_at)
-          VALUES ($1, $2, NOW())
-          ON CONFLICT (sku) DO NOTHING
-          `,
-          [item.sku, item.stock_qty]
-        );
-      }
-    }
-  } else {
-    const missingStockRes = await pool.query(`
-      SELECT p.sku, p.default_stock_qty
-      FROM products p
-      LEFT JOIN stock_items s ON s.sku = p.sku
-      WHERE s.sku IS NULL
-    `);
-
-    for (const row of missingStockRes.rows) {
-      await pool.query(
-        `
-        INSERT INTO stock_items (sku, stock_qty, updated_at)
-        VALUES ($1, $2, NOW())
-        ON CONFLICT (sku) DO NOTHING
-        `,
-        [row.sku, row.default_stock_qty]
-      );
-    }
-  }
-
-    for (const [categoryName, items] of Object.entries(SAFE_SEED_CATALOG)) {
-    let categoryRes = await pool.query(
-      `SELECT category_id FROM categories WHERE category_name = $1 LIMIT 1`,
-      [categoryName]
-    );
-
-    let categoryId;
-
-    if (!categoryRes.rows.length) {
-      const maxRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) AS max_sort FROM categories`);
-      const nextSort = Number(maxRes.rows[0]?.max_sort || 0) + 1;
-
-      const createdCategory = await pool.query(
-        `
-        INSERT INTO categories (category_name, sort_order, is_active, created_at, updated_at)
-        VALUES ($1, $2, TRUE, NOW(), NOW())
-        RETURNING category_id
-        `,
-        [categoryName, nextSort]
-      );
-
-      categoryId = createdCategory.rows[0].category_id;
-    } else {
-      categoryId = categoryRes.rows[0].category_id;
-    }
-
-    for (const item of items) {
-      await pool.query(
-        `
-        INSERT INTO products (
-          category_id, sku, product_name, price_pence, default_stock_qty, is_active, created_at, updated_at
-        )
-        VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
-        ON CONFLICT (sku) DO NOTHING
-        `,
-        [categoryId, item.sku, item.name, item.price_pence, item.stock_qty]
-      );
-
-      await pool.query(
-        `
-        INSERT INTO stock_items (sku, stock_qty, updated_at)
-        VALUES ($1, $2, NOW())
-        ON CONFLICT (sku) DO NOTHING
-        `,
-        [item.sku, item.stock_qty]
-      );
-    }
-  }
+  await seedOrRepairCatalog();
 }
 
 /* --------------------------- CATEGORY / PRODUCT -------------------------- */
@@ -1254,12 +1231,13 @@ async function recordDiscountCodeUse(userId, code, orderId) {
 }
 
 async function hasUserPlacedOrderBefore(userId) {
-  const res = await pool.query(`SELECT 1 FROM orders WHERE user_id=$1 LIMIT 1`, [userId]);
+  const res = await pool.query(`SELECT 1 FROM orders WHERE user_id = $1 LIMIT 1`, [userId]);
   return res.rows.length > 0;
 }
 
 async function validateDiscountCodeForUser(userId, code) {
   const normalized = normalizeDiscountCode(code);
+
   if (!normalized) {
     return { valid: false, reason: "Please enter a code." };
   }
@@ -1292,8 +1270,8 @@ async function validateDiscountCodeForUser(userId, code) {
     valid: true,
     code: normalized,
     discount_percent: Number(record.discount_percent || 0),
-    is_active: !!record.is_active,
-    one_use_per_user: !!record.one_use_per_user,
+    is_active: Boolean(record.is_active),
+    one_use_per_user: Boolean(record.one_use_per_user),
   };
 }
 
@@ -1315,7 +1293,7 @@ async function createProductRequestRecord(userId, username, requestedProduct, ex
 /* ------------------------------- CART HELPERS --------------------------- */
 
 async function getStockForSku(sku) {
-  const res = await pool.query(`SELECT stock_qty FROM stock_items WHERE sku=$1`, [sku]);
+  const res = await pool.query(`SELECT stock_qty FROM stock_items WHERE sku = $1`, [sku]);
   if (!res.rows.length) return 0;
   return Number(res.rows[0].stock_qty || 0);
 }
@@ -1326,7 +1304,7 @@ async function getCartQtyForSku(userId, sku) {
     SELECT COALESCE(SUM(ci.qty), 0) AS qty
     FROM carts c
     JOIN cart_items ci ON ci.cart_id = c.cart_id
-    WHERE c.user_id = $1 AND c.status='open' AND ci.sku = $2
+    WHERE c.user_id = $1 AND c.status = 'open' AND ci.sku = $2
     `,
     [userId, sku]
   );
@@ -1335,7 +1313,7 @@ async function getCartQtyForSku(userId, sku) {
 
 async function getOrCreateCart(userId) {
   const existing = await pool.query(
-    `SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`,
+    `SELECT cart_id FROM carts WHERE user_id = $1 AND status = 'open'`,
     [userId]
   );
 
@@ -1374,7 +1352,7 @@ async function addCartItem(userId, item) {
 
 async function getCartSummary(userId) {
   const cart = await pool.query(
-    `SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`,
+    `SELECT cart_id FROM carts WHERE user_id = $1 AND status = 'open'`,
     [userId]
   );
 
@@ -1385,7 +1363,7 @@ async function getCartSummary(userId) {
     `
     SELECT sku, name, size, color, qty, price_pence
     FROM cart_items
-    WHERE cart_id=$1
+    WHERE cart_id = $1
     ORDER BY id ASC
     `,
     [cartId]
@@ -1393,6 +1371,7 @@ async function getCartSummary(userId) {
 
   const items = itemsRes.rows;
   const subtotal_pence = items.reduce((sum, it) => sum + it.qty * it.price_pence, 0);
+
   return { items, subtotal_pence };
 }
 
@@ -1439,20 +1418,20 @@ async function getUserShippingProfile(userId) {
 
 async function clearCart(userId) {
   const cart = await pool.query(
-    `SELECT cart_id FROM carts WHERE user_id=$1 AND status='open'`,
+    `SELECT cart_id FROM carts WHERE user_id = $1 AND status = 'open'`,
     [userId]
   );
 
   if (!cart.rows.length) return;
 
   const cartId = cart.rows[0].cart_id;
-  await pool.query(`DELETE FROM cart_items WHERE cart_id=$1`, [cartId]);
-  await pool.query(`DELETE FROM carts WHERE cart_id=$1`, [cartId]);
+  await pool.query(`DELETE FROM cart_items WHERE cart_id = $1`, [cartId]);
+  await pool.query(`DELETE FROM carts WHERE cart_id = $1`, [cartId]);
 }
 
 async function getCartDiscount(userId) {
   const res = await pool.query(
-    `SELECT discount_code, discount_percent FROM carts WHERE user_id=$1 AND status='open'`,
+    `SELECT discount_code, discount_percent FROM carts WHERE user_id = $1 AND status = 'open'`,
     [userId]
   );
 
@@ -1472,10 +1451,10 @@ async function setCartDiscount(userId, code, percent) {
   await pool.query(
     `
     UPDATE carts
-    SET discount_code=$1,
-        discount_percent=$2,
-        updated_at=NOW()
-    WHERE cart_id=$3
+    SET discount_code = $1,
+        discount_percent = $2,
+        updated_at = NOW()
+    WHERE cart_id = $3
     `,
     [normalizeDiscountCode(code), percent, cartId]
   );
@@ -1485,10 +1464,10 @@ async function clearCartDiscount(userId) {
   await pool.query(
     `
     UPDATE carts
-    SET discount_code=NULL,
-        discount_percent=0,
-        updated_at=NOW()
-    WHERE user_id=$1 AND status='open'
+    SET discount_code = NULL,
+        discount_percent = 0,
+        updated_at = NOW()
+    WHERE user_id = $1 AND status = 'open'
     `,
     [userId]
   );
@@ -1646,9 +1625,9 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Success)
         .setDisabled(
           status === "paid" ||
-          status === "dispatched" ||
-          status === "cancelled" ||
-          status === "completed"
+            status === "dispatched" ||
+            status === "cancelled" ||
+            status === "completed"
         ),
       new ButtonBuilder()
         .setCustomId(`staff_mark_dispatched:${orderId}`)
@@ -1656,8 +1635,8 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Primary)
         .setDisabled(
           status === "dispatched" ||
-          status === "cancelled" ||
-          status === "completed"
+            status === "cancelled" ||
+            status === "completed"
         ),
       new ButtonBuilder()
         .setCustomId(`staff_complete_order:${orderId}`)
@@ -1665,8 +1644,8 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(
           status === "cancelled" ||
-          status === "completed" ||
-          status !== "dispatched"
+            status === "completed" ||
+            status !== "dispatched"
         )
     ),
     new ActionRowBuilder().addComponents(
@@ -1676,8 +1655,8 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Danger)
         .setDisabled(
           status === "dispatched" ||
-          status === "cancelled" ||
-          status === "completed"
+            status === "cancelled" ||
+            status === "completed"
         )
     ),
   ];
@@ -1898,22 +1877,6 @@ function staffToggleDiscountModal() {
   return modal;
 }
 
-function staffStockQtyModal(sku, label) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_stock_qty_modal:${sku}`)
-    .setTitle("Update Stock");
-
-  const qtyInput = new TextInputBuilder()
-    .setCustomId("stock_qty")
-    .setLabel(truncate100(`New stock for ${label || sku}`))
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: 25");
-
-  modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
-  return modal;
-}
-
 function staffAddCategoryModal() {
   const modal = new ModalBuilder()
     .setCustomId("staff_add_category_modal")
@@ -1945,15 +1908,6 @@ function staffRenameCategoryModal(categoryId, currentName) {
   return modal;
 }
 
-/* ------------------------------ STAFF MODALS (SAFE) ------------------------------ */
-
-// SAFE helper (avoids Discord limits)
-function safeText(str, max = 80) {
-  return String(str || "").slice(0, max);
-}
-
-/* ------------------------------ ADD PRODUCT ------------------------------ */
-
 function staffAddProductModal(categoryId, categoryName) {
   const modal = new ModalBuilder()
     .setCustomId(`staff_add_product_modal:${categoryId}`)
@@ -1968,7 +1922,7 @@ function staffAddProductModal(categoryId, categoryName) {
 
   const nameInput = new TextInputBuilder()
     .setCustomId("product_name")
-    .setLabel("Product name") // KEEP SHORT
+    .setLabel("Product name")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setPlaceholder(`Category: ${safeText(categoryName)}`);
@@ -1997,7 +1951,25 @@ function staffAddProductModal(categoryId, categoryName) {
   return modal;
 }
 
-/* ------------------------------ UPDATE STOCK ------------------------------ */
+function staffEditPriceModal(sku, currentPricePence) {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_edit_price_modal:${sku}`)
+    .setTitle("Change Price");
+
+  const priceInput = new TextInputBuilder()
+    .setCustomId("price_gbp")
+    .setLabel("Price (GBP)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setValue((Number(currentPricePence || 0) / 100).toFixed(2))
+    .setPlaceholder("Example: 19.99");
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(priceInput)
+  );
+
+  return modal;
+}
 
 function staffStockQtyModal(sku, label) {
   const modal = new ModalBuilder()
@@ -2006,7 +1978,7 @@ function staffStockQtyModal(sku, label) {
 
   const qtyInput = new TextInputBuilder()
     .setCustomId("stock_qty")
-    .setLabel("New stock quantity") // SHORT
+    .setLabel("New stock quantity")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setPlaceholder(safeText(label || sku));
@@ -2016,7 +1988,53 @@ function staffStockQtyModal(sku, label) {
   return modal;
 }
 
-/* ------------------------------ TIMEOUT ------------------------------ */
+function staffRenameProductModal(sku, currentName) {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_rename_product_modal:${sku}`)
+    .setTitle("Rename Product");
+
+  const input = new TextInputBuilder()
+    .setCustomId("new_product_name")
+    .setLabel("New product name")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setValue(String(currentName || "").slice(0, 4000));
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
+function staffEditPriceModal(sku, currentPricePence) {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_edit_price_modal:${sku}`)
+    .setTitle("Change Price");
+
+  const input = new TextInputBuilder()
+    .setCustomId("price_gbp")
+    .setLabel("Price (GBP)")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setValue(String((Number(currentPricePence || 0) / 100).toFixed(2)));
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
+
+function staffMemberSearchModal(action, title) {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_member_search_modal:${action}`)
+    .setTitle(title);
+
+  const input = new TextInputBuilder()
+    .setCustomId("member_search")
+    .setLabel("Search by name, username or ID")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true)
+    .setPlaceholder("Example: james");
+
+  modal.addComponents(new ActionRowBuilder().addComponents(input));
+  return modal;
+}
 
 function staffTimeoutModal(userId, label) {
   const modal = new ModalBuilder()
@@ -2032,7 +2050,7 @@ function staffTimeoutModal(userId, label) {
 
   const reasonInput = new TextInputBuilder()
     .setCustomId("timeout_reason")
-    .setLabel("Reason") // SHORT
+    .setLabel("Reason")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false)
     .setPlaceholder(safeText(label || userId));
@@ -2045,8 +2063,6 @@ function staffTimeoutModal(userId, label) {
   return modal;
 }
 
-/* ------------------------------ BAN ------------------------------ */
-
 function staffBanModal(userId, label) {
   const modal = new ModalBuilder()
     .setCustomId(`staff_ban_modal:${userId}`)
@@ -2054,7 +2070,7 @@ function staffBanModal(userId, label) {
 
   const reasonInput = new TextInputBuilder()
     .setCustomId("ban_reason")
-    .setLabel("Reason") // SHORT
+    .setLabel("Reason")
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false)
     .setPlaceholder(safeText(label || userId));
@@ -2065,6 +2081,36 @@ function staffBanModal(userId, label) {
 }
 
 /* ----------------------------- SHOP UI HELPERS -------------------------- */
+
+function cartActionsComponents(disableSubmit = false) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("cart_discount")
+        .setLabel("Discount Code")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("cart_clear")
+        .setLabel("Clear Cart")
+        .setStyle(ButtonStyle.Danger),
+      new ButtonBuilder()
+        .setCustomId("cart_submit")
+        .setLabel("Submit Order")
+        .setStyle(ButtonStyle.Success)
+        .setDisabled(disableSubmit)
+    ),
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("browse_categories")
+        .setLabel("Back to Categories")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("shop_close_session")
+        .setLabel("Close Shop")
+        .setStyle(ButtonStyle.Danger)
+    ),
+  ];
+}
 
 async function categorySelectComponents() {
   const categories = await getCategories();
@@ -2971,8 +3017,8 @@ client.on("interactionCreate", async (interaction) => {
           customId === "staff_browse_verified_members"
             ? "verified"
             : customId === "staff_browse_unverified_members"
-            ? "unverified"
-            : "all";
+              ? "unverified"
+              : "all";
 
         const members = await getFilteredGuildMembers(interaction.guild, view);
 
@@ -3358,15 +3404,20 @@ client.on("interactionCreate", async (interaction) => {
               [orderId, it.sku, it.name, it.size, it.color, it.qty, it.price_pence]
             );
 
-            await pool.query(
+            const stockUpdate = await pool.query(
               `
               UPDATE stock_items
               SET stock_qty = stock_qty - $1,
                   updated_at = NOW()
               WHERE sku = $2 AND stock_qty >= $1
+              RETURNING sku
               `,
               [it.qty, it.sku]
             );
+
+            if (!stockUpdate.rowCount) {
+              throw new Error(`Stock update failed for ${it.name}.`);
+            }
           }
 
           if (discount.discount_code) {
