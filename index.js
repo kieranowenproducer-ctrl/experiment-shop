@@ -3941,10 +3941,6 @@ client.on("interactionCreate", async (interaction) => {
     /* ----------------------------- MODAL SUBMITS ------------------------- */
 
     if (interaction.isModalSubmit()) {
-
-    /* ----------------------------- MODAL SUBMITS ------------------------- */
-
-    if (interaction.isModalSubmit()) {
       const { customId } = interaction;
 
       if (
