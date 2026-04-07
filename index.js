@@ -234,6 +234,11 @@ function safeText(str, max = 80) {
   return String(str || "").slice(0, max);
 }
 
+function nullIfBlank(value) {
+  const str = String(value || "").trim();
+  return str ? str : null;
+}
+
 function parsePriceToPence(input) {
   const cleaned = String(input || "").trim().replace(/£/g, "");
   const value = Number(cleaned);
@@ -390,6 +395,18 @@ function splitLongMessage(content, maxLength = 1900) {
 
   if (current.length) chunks.push(current);
   return chunks;
+}
+
+function formatFullShippingInfo({ fullName, email, phone, fullAddress, country }) {
+  return [
+    nullIfBlank(fullName),
+    nullIfBlank(email),
+    nullIfBlank(phone),
+    nullIfBlank(fullAddress),
+    nullIfBlank(country),
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 /* -------------------------- MODERATION HELPERS -------------------------- */
@@ -836,6 +853,31 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS username TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS marketing_consent_status BOOLEAN;
+  `);
+
+  await pool.query(`
+    ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS marketing_consent_timestamp TIMESTAMPTZ;
+  `);
+
+  await pool.query(`
+    ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS marketing_consent_source TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW();
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS order_items (
       id BIGSERIAL PRIMARY KEY,
       order_id BIGINT NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
@@ -846,6 +888,37 @@ async function initDb() {
       qty INT NOT NULL CHECK (qty > 0),
       price_pence INT NOT NULL CHECK (price_pence >= 0)
     );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS customer_leads (
+      discord_user_id TEXT PRIMARY KEY,
+      username TEXT,
+      full_name TEXT,
+      email TEXT,
+      phone TEXT,
+      full_shipping_info TEXT,
+      country TEXT,
+      first_order_date TIMESTAMPTZ,
+      last_order_date TIMESTAMPTZ,
+      total_orders INT NOT NULL DEFAULT 0,
+      marketing_consent_status BOOLEAN,
+      marketing_consent_timestamp TIMESTAMPTZ,
+      marketing_consent_source TEXT,
+      opt_out_status BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_customer_leads_email
+    ON customer_leads (email);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_customer_leads_last_order_date
+    ON customer_leads (last_order_date DESC);
   `);
 
   await pool.query(`
@@ -1355,6 +1428,251 @@ async function createProductRequestRecord(userId, username, requestedProduct, ex
   return res.rows[0];
 }
 
+/* ------------------------- CUSTOMER / LEADS HELPERS ---------------------- */
+
+async function upsertCustomerLeadProfile({
+  userId,
+  username,
+  fullName,
+  email,
+  phone,
+  fullAddress,
+  country,
+  marketingConsentStatus = null,
+  marketingConsentTimestamp = null,
+  marketingConsentSource = null,
+}) {
+  const cleanUserId = String(userId || "").trim();
+  if (!cleanUserId) {
+    throw new Error("User ID is required for customer lead upsert.");
+  }
+
+  const fullShippingInfo = formatFullShippingInfo({
+    fullName,
+    email,
+    phone,
+    fullAddress,
+    country,
+  });
+
+  await pool.query(
+    `
+    INSERT INTO customer_leads (
+      discord_user_id,
+      username,
+      full_name,
+      email,
+      phone,
+      full_shipping_info,
+      country,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+    ON CONFLICT (discord_user_id) DO UPDATE
+    SET username = COALESCE(EXCLUDED.username, customer_leads.username),
+        full_name = COALESCE(EXCLUDED.full_name, customer_leads.full_name),
+        email = COALESCE(EXCLUDED.email, customer_leads.email),
+        phone = COALESCE(EXCLUDED.phone, customer_leads.phone),
+        full_shipping_info = COALESCE(EXCLUDED.full_shipping_info, customer_leads.full_shipping_info),
+        country = COALESCE(EXCLUDED.country, customer_leads.country),
+        marketing_consent_status = COALESCE(EXCLUDED.marketing_consent_status, customer_leads.marketing_consent_status),
+        marketing_consent_timestamp = COALESCE(EXCLUDED.marketing_consent_timestamp, customer_leads.marketing_consent_timestamp),
+        marketing_consent_source = COALESCE(EXCLUDED.marketing_consent_source, customer_leads.marketing_consent_source),
+        updated_at = NOW()
+    `,
+    [
+      cleanUserId,
+      nullIfBlank(username),
+      nullIfBlank(fullName),
+      nullIfBlank(email),
+      nullIfBlank(phone),
+      nullIfBlank(fullShippingInfo),
+      nullIfBlank(country),
+      typeof marketingConsentStatus === "boolean" ? marketingConsentStatus : null,
+      marketingConsentTimestamp || null,
+      nullIfBlank(marketingConsentSource),
+    ]
+  );
+}
+
+async function recordCustomerLeadOrder({
+  userId,
+  username,
+  fullName,
+  email,
+  phone,
+  fullAddress,
+  country,
+  marketingConsentStatus = null,
+  marketingConsentTimestamp = null,
+  marketingConsentSource = null,
+  orderCreatedAt = new Date(),
+}) {
+  const cleanUserId = String(userId || "").trim();
+  if (!cleanUserId) {
+    throw new Error("User ID is required for customer lead order recording.");
+  }
+
+  const fullShippingInfo = formatFullShippingInfo({
+    fullName,
+    email,
+    phone,
+    fullAddress,
+    country,
+  });
+
+  await pool.query(
+    `
+    INSERT INTO customer_leads (
+      discord_user_id,
+      username,
+      full_name,
+      email,
+      phone,
+      full_shipping_info,
+      country,
+      first_order_date,
+      last_order_date,
+      total_orders,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      updated_at
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 1, $9, $10, $11, NOW())
+    ON CONFLICT (discord_user_id) DO UPDATE
+    SET username = COALESCE(EXCLUDED.username, customer_leads.username),
+        full_name = COALESCE(EXCLUDED.full_name, customer_leads.full_name),
+        email = COALESCE(EXCLUDED.email, customer_leads.email),
+        phone = COALESCE(EXCLUDED.phone, customer_leads.phone),
+        full_shipping_info = COALESCE(EXCLUDED.full_shipping_info, customer_leads.full_shipping_info),
+        country = COALESCE(EXCLUDED.country, customer_leads.country),
+        first_order_date = COALESCE(customer_leads.first_order_date, EXCLUDED.first_order_date),
+        last_order_date = CASE
+          WHEN customer_leads.last_order_date IS NULL THEN EXCLUDED.last_order_date
+          WHEN EXCLUDED.last_order_date IS NULL THEN customer_leads.last_order_date
+          ELSE GREATEST(customer_leads.last_order_date, EXCLUDED.last_order_date)
+        END,
+        total_orders = customer_leads.total_orders + 1,
+        marketing_consent_status = COALESCE(EXCLUDED.marketing_consent_status, customer_leads.marketing_consent_status),
+        marketing_consent_timestamp = COALESCE(EXCLUDED.marketing_consent_timestamp, customer_leads.marketing_consent_timestamp),
+        marketing_consent_source = COALESCE(EXCLUDED.marketing_consent_source, customer_leads.marketing_consent_source),
+        updated_at = NOW()
+    `,
+    [
+      cleanUserId,
+      nullIfBlank(username),
+      nullIfBlank(fullName),
+      nullIfBlank(email),
+      nullIfBlank(phone),
+      nullIfBlank(fullShippingInfo),
+      nullIfBlank(country),
+      orderCreatedAt,
+      typeof marketingConsentStatus === "boolean" ? marketingConsentStatus : null,
+      marketingConsentTimestamp || null,
+      nullIfBlank(marketingConsentSource),
+    ]
+  );
+}
+
+async function updateCustomerLeadConsent(userId, consentStatus, source = "shop_checkout") {
+  const cleanUserId = String(userId || "").trim();
+  if (!cleanUserId) {
+    throw new Error("User ID is required for consent update.");
+  }
+
+  const hasConsentValue = typeof consentStatus === "boolean";
+  if (!hasConsentValue) return;
+
+  await pool.query(
+    `
+    INSERT INTO customer_leads (
+      discord_user_id,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      updated_at
+    )
+    VALUES ($1, $2, NOW(), $3, NOW())
+    ON CONFLICT (discord_user_id) DO UPDATE
+    SET marketing_consent_status = EXCLUDED.marketing_consent_status,
+        marketing_consent_timestamp = EXCLUDED.marketing_consent_timestamp,
+        marketing_consent_source = EXCLUDED.marketing_consent_source,
+        opt_out_status = CASE
+          WHEN EXCLUDED.marketing_consent_status = TRUE THEN FALSE
+          ELSE customer_leads.opt_out_status
+        END,
+        updated_at = NOW()
+    `,
+    [cleanUserId, consentStatus, nullIfBlank(source)]
+  );
+}
+
+async function getCustomerLeadByUserId(userId) {
+  const res = await pool.query(
+    `
+    SELECT
+      discord_user_id,
+      username,
+      full_name,
+      email,
+      phone,
+      full_shipping_info,
+      country,
+      first_order_date,
+      last_order_date,
+      total_orders,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      opt_out_status,
+      updated_at
+    FROM customer_leads
+    WHERE discord_user_id = $1
+    LIMIT 1
+    `,
+    [userId]
+  );
+
+  return res.rows[0] || null;
+}
+
+async function getRecentCustomerLeads(limit = 10) {
+  const safeLimit = Math.max(1, Math.min(25, Number(limit || 10)));
+
+  const res = await pool.query(
+    `
+    SELECT
+      discord_user_id,
+      username,
+      full_name,
+      email,
+      phone,
+      full_shipping_info,
+      country,
+      first_order_date,
+      last_order_date,
+      total_orders,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      opt_out_status,
+      updated_at
+    FROM customer_leads
+    ORDER BY
+      COALESCE(last_order_date, updated_at) DESC,
+      updated_at DESC
+    LIMIT $1
+    `,
+    [safeLimit]
+  );
+
+  return res.rows;
+}
+
 /* ------------------------------- CART HELPERS --------------------------- */
 
 async function getStockForSku(sku) {
@@ -1440,7 +1758,22 @@ async function getCartSummary(userId) {
   return { items, subtotal_pence };
 }
 
-async function upsertProfile(userId, fullName, email, phone, shipping) {
+async function upsertProfile(
+  userId,
+  username,
+  fullName,
+  email,
+  phone,
+  shipping,
+  marketingConsentStatus = null,
+  marketingConsentSource = null
+) {
+  const cleanFullName = nullIfBlank(fullName);
+  const cleanEmail = nullIfBlank(email);
+  const cleanPhone = nullIfBlank(phone);
+  const cleanFullAddress = nullIfBlank(shipping?.full_address);
+  const cleanCountry = nullIfBlank(shipping?.country);
+
   await pool.query(
     `
     INSERT INTO user_profiles (user_id, full_name, email, phone, updated_at)
@@ -1451,7 +1784,7 @@ async function upsertProfile(userId, fullName, email, phone, shipping) {
         phone = EXCLUDED.phone,
         updated_at = NOW()
     `,
-    [userId, fullName, email, phone]
+    [userId, cleanFullName, cleanEmail, cleanPhone]
   );
 
   await pool.query(
@@ -1463,8 +1796,22 @@ async function upsertProfile(userId, fullName, email, phone, shipping) {
         country = EXCLUDED.country,
         updated_at = NOW()
     `,
-    [userId, shipping.full_address, shipping.country]
+    [userId, cleanFullAddress, cleanCountry]
   );
+
+  await upsertCustomerLeadProfile({
+    userId,
+    username,
+    fullName: cleanFullName,
+    email: cleanEmail,
+    phone: cleanPhone,
+    fullAddress: cleanFullAddress,
+    country: cleanCountry,
+    marketingConsentStatus,
+    marketingConsentTimestamp:
+      typeof marketingConsentStatus === "boolean" ? new Date() : null,
+    marketingConsentSource,
+  });
 }
 
 async function getUserShippingProfile(userId) {
@@ -1641,7 +1988,8 @@ function receiptEmbed(
   shipping,
   total,
   shippingProfile,
-  status = "pending"
+  status = "pending",
+  marketingConsentStatus = null
 ) {
   const lines = items.map(
     (it) => `• **${it.name}** (${it.size}, ${it.color}) × ${it.qty} — ${money(it.qty * it.price_pence)}`
@@ -1671,6 +2019,16 @@ function receiptEmbed(
         `${shippingProfile.phone}\n` +
         `${shippingProfile.full_address}\n` +
         `${shippingProfile.country}`,
+    },
+    {
+      name: "Marketing Consent",
+      value:
+        marketingConsentStatus === true
+          ? "Yes"
+          : marketingConsentStatus === false
+            ? "No"
+            : "Not recorded",
+      inline: true,
     },
     {
       name: "Payment — Bank Transfer",
@@ -1902,6 +2260,21 @@ function staffOrderLookupModal() {
     .setRequired(true);
 
   modal.addComponents(new ActionRowBuilder().addComponents(orderIdInput));
+  return modal;
+}
+
+function staffCustomerLookupModal() {
+  const modal = new ModalBuilder()
+    .setCustomId("staff_customer_lookup_modal")
+    .setTitle("Lookup Customer / Lead");
+
+  const lookupInput = new TextInputBuilder()
+    .setCustomId("lookup_customer_value")
+    .setLabel("Discord user ID, email, phone or username")
+    .setStyle(TextInputStyle.Short)
+    .setRequired(true);
+
+  modal.addComponents(new ActionRowBuilder().addComponents(lookupInput));
   return modal;
 }
 
@@ -2420,12 +2793,15 @@ function staffMainPanel() {
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("staff_nav_orders").setLabel("Orders").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_nav_products").setLabel("Products").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_nav_categories").setLabel("Categories").setStyle(ButtonStyle.Success)
+        new ButtonBuilder().setCustomId("staff_nav_customers").setLabel("Customers").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_nav_products").setLabel("Products").setStyle(ButtonStyle.Success)
       ),
       new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_nav_categories").setLabel("Categories").setStyle(ButtonStyle.Success),
         new ButtonBuilder().setCustomId("staff_nav_stock").setLabel("Stock").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_nav_discounts").setLabel("Discounts").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_nav_discounts").setLabel("Discounts").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("staff_nav_moderation").setLabel("Moderation").setStyle(ButtonStyle.Danger)
       ),
     ],
@@ -2494,6 +2870,88 @@ function staffOrdersPanel() {
     components: [
       new ActionRowBuilder().addComponents(
         new ButtonBuilder().setCustomId("staff_lookup_order").setLabel("Lookup Order").setStyle(ButtonStyle.Primary)
+      ),
+      navRow(),
+    ],
+  };
+}
+
+function buildCustomerLeadLookupEmbed(lead) {
+  const consentValue =
+    lead.marketing_consent_status === true
+      ? "Yes"
+      : lead.marketing_consent_status === false
+        ? "No"
+        : "Not recorded";
+
+  return new EmbedBuilder()
+    .setTitle(`Customer / Lead`)
+    .addFields(
+      { name: "Discord User ID", value: lead.discord_user_id || "Unknown", inline: true },
+      { name: "Username", value: lead.username || "Unknown", inline: true },
+      { name: "Total Orders", value: String(Number(lead.total_orders || 0)), inline: true },
+      { name: "Full Name", value: lead.full_name || "Unknown", inline: true },
+      { name: "Email", value: lead.email || "Unknown", inline: true },
+      { name: "Phone", value: lead.phone || "Unknown", inline: true },
+      {
+        name: "First Order Date",
+        value: lead.first_order_date ? `<t:${Math.floor(new Date(lead.first_order_date).getTime() / 1000)}:F>` : "None",
+        inline: true,
+      },
+      {
+        name: "Last Order Date",
+        value: lead.last_order_date ? `<t:${Math.floor(new Date(lead.last_order_date).getTime() / 1000)}:F>` : "None",
+        inline: true,
+      },
+      {
+        name: "Marketing Consent",
+        value: consentValue,
+        inline: true,
+      },
+      {
+        name: "Consent Timestamp",
+        value: lead.marketing_consent_timestamp
+          ? `<t:${Math.floor(new Date(lead.marketing_consent_timestamp).getTime() / 1000)}:F>`
+          : "None",
+        inline: true,
+      },
+      {
+        name: "Opt Out",
+        value: lead.opt_out_status ? "Yes" : "No",
+        inline: true,
+      },
+      {
+        name: "Shipping Info",
+        value: lead.full_shipping_info || "None stored",
+      }
+    )
+    .setTimestamp(new Date(lead.updated_at || Date.now()));
+}
+
+function buildRecentCustomerLeadsEmbed(leads) {
+  const description = leads.length
+    ? leads
+        .map((lead, index) => {
+          const displayName = lead.full_name || lead.username || lead.discord_user_id;
+          const email = lead.email || "No email";
+          const orders = Number(lead.total_orders || 0);
+          return `${index + 1}. **${displayName}** • ${email} • Orders: ${orders}`;
+        })
+        .join("\n")
+    : "_No customer or lead records found_";
+
+  return new EmbedBuilder()
+    .setTitle("Recent Customers / Leads")
+    .setDescription(description);
+}
+
+function staffCustomersPanel() {
+  return {
+    content: `🟣 **Customers / Leads**`,
+    components: [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_lookup_customer").setLabel("Lookup").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_recent_customers").setLabel("Recent").setStyle(ButtonStyle.Secondary)
       ),
       navRow(),
     ],
@@ -2781,10 +3239,11 @@ client.on("interactionCreate", async (interaction) => {
           `**How it works:**\n` +
           `1) Click the button below to get started\n` +
           `2) Enter your shipping details\n` +
-          `3) Browse categories and move back and forth freely\n` +
-          `4) Add multiple items to your basket\n` +
-          `5) Apply ${WELCOME_CODE} on your first order for ${WELCOME_DISCOUNT_PERCENT}% off\n` +
-          `6) Submit your order when you're done\n\n` +
+          `3) Choose your optional marketing preference\n` +
+          `4) Browse categories and move back and forth freely\n` +
+          `5) Add multiple items to your basket\n` +
+          `6) Apply ${WELCOME_CODE} on your first order for ${WELCOME_DISCOUNT_PERCENT}% off\n` +
+          `7) Submit your order when you're done\n\n` +
           `**Important payment note:**\n` +
           `A **screenshot of payment must be provided in your private order chat** as evidence before your order can be shipped.\n` +
           `Failure to provide payment proof may lead to delays.\n\n` +
@@ -2880,6 +3339,9 @@ client.on("interactionCreate", async (interaction) => {
         customId === "cart_discount" ||
         customId === "cart_clear" ||
         customId === "cart_submit" ||
+        customId === "marketing_consent_yes" ||
+        customId === "marketing_consent_no" ||
+        customId === "marketing_consent_skip" ||
         customId.startsWith("add_qty:") ||
         customId.startsWith("add_qty_other:") ||
         customId.startsWith("back_to_items:")
@@ -2897,6 +3359,52 @@ client.on("interactionCreate", async (interaction) => {
 
       if (customId === "product_request_open") {
         return interaction.showModal(productRequestModal());
+      }
+
+      if (customId === "marketing_consent_yes") {
+        await updateCustomerLeadConsent(interaction.user.id, true, "shop_shipping_reply");
+
+        return interaction.update({
+          content:
+            "✅ Marketing preference saved: **Yes**\n\n" +
+            "You can continue from your private shop channel below.",
+          components: [
+            ...interaction.message.components.filter(
+              (row) =>
+                row.components?.some((c) => c.style === ButtonStyle.Link)
+            ),
+          ],
+        });
+      }
+
+      if (customId === "marketing_consent_no") {
+        await updateCustomerLeadConsent(interaction.user.id, false, "shop_shipping_reply");
+
+        return interaction.update({
+          content:
+            "✅ Marketing preference saved: **No**\n\n" +
+            "You can continue from your private shop channel below.",
+          components: [
+            ...interaction.message.components.filter(
+              (row) =>
+                row.components?.some((c) => c.style === ButtonStyle.Link)
+            ),
+          ],
+        });
+      }
+
+      if (customId === "marketing_consent_skip") {
+        return interaction.update({
+          content:
+            "Skipped for now.\n\n" +
+            "You can continue from your private shop channel below.",
+          components: [
+            ...interaction.message.components.filter(
+              (row) =>
+                row.components?.some((c) => c.style === ButtonStyle.Link)
+            ),
+          ],
+        });
       }
 
       if (customId.startsWith("verify_approve:")) {
@@ -2941,6 +3449,10 @@ client.on("interactionCreate", async (interaction) => {
 
       if (customId === "staff_nav_orders") {
         return interaction.update(staffOrdersPanel());
+      }
+
+      if (customId === "staff_nav_customers") {
+        return interaction.update(staffCustomersPanel());
       }
 
       if (customId === "staff_nav_products") {
@@ -3067,6 +3579,20 @@ client.on("interactionCreate", async (interaction) => {
 
       if (customId === "staff_lookup_order") {
         return interaction.showModal(staffOrderLookupModal());
+      }
+
+      if (customId === "staff_lookup_customer") {
+        return interaction.showModal(staffCustomerLookupModal());
+      }
+
+      if (customId === "staff_recent_customers") {
+        const leads = await getRecentCustomerLeads(10);
+
+        return interaction.update({
+          content: "Recent customers / leads:",
+          embeds: [buildRecentCustomerLeadsEmbed(leads)],
+          components: [navRow()],
+        });
       }
 
       if (customId === "staff_add_verified") {
@@ -3439,21 +3965,36 @@ client.on("interactionCreate", async (interaction) => {
             }
           }
 
+          const leadProfile = await getCustomerLeadByUserId(interaction.user.id);
+          const marketingConsentStatus =
+            typeof leadProfile?.marketing_consent_status === "boolean"
+              ? leadProfile.marketing_consent_status
+              : null;
+          const marketingConsentTimestamp =
+            marketingConsentStatus !== null ? leadProfile?.marketing_consent_timestamp || new Date() : null;
+          const marketingConsentSource =
+            marketingConsentStatus !== null
+              ? leadProfile?.marketing_consent_source || "shop_checkout"
+              : null;
+
           const totals = calculateDiscountedTotals(subtotal, shipping, discount.discount_percent);
           const total = totals.total;
 
           const orderRes = await pool.query(
             `
             INSERT INTO orders (
-              user_id, full_name, email, phone, full_address, country,
+              user_id, username, full_name, email, phone, full_address, country,
               subtotal_pence, shipping_pence, total_pence, discount_code,
-              discount_percent, discount_amount_pence, status
+              discount_percent, discount_amount_pence, status,
+              marketing_consent_status, marketing_consent_timestamp, marketing_consent_source,
+              updated_at
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending')
-            RETURNING order_id
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14,$15,$16,NOW())
+            RETURNING order_id, created_at
             `,
             [
               interaction.user.id,
+              interaction.user.tag,
               shippingProfile.full_name,
               shippingProfile.email,
               shippingProfile.phone,
@@ -3465,10 +4006,14 @@ client.on("interactionCreate", async (interaction) => {
               discount.discount_code,
               discount.discount_percent,
               totals.discountAmount,
+              marketingConsentStatus,
+              marketingConsentTimestamp,
+              marketingConsentSource,
             ]
           );
 
           const orderId = orderRes.rows[0].order_id;
+          const orderCreatedAt = orderRes.rows[0].created_at || new Date();
 
           for (const it of cart.items) {
             await pool.query(
@@ -3495,13 +4040,27 @@ client.on("interactionCreate", async (interaction) => {
             }
           }
 
+          await recordCustomerLeadOrder({
+            userId: interaction.user.id,
+            username: interaction.user.tag,
+            fullName: shippingProfile.full_name,
+            email: shippingProfile.email,
+            phone: shippingProfile.phone,
+            fullAddress: shippingProfile.full_address,
+            country: shippingProfile.country,
+            marketingConsentStatus,
+            marketingConsentTimestamp,
+            marketingConsentSource,
+            orderCreatedAt,
+          });
+
           if (discount.discount_code) {
             await recordDiscountCodeUse(interaction.user.id, discount.discount_code, orderId);
           }
 
           const receiptChannel = await createReceiptChannel(interaction.guild, interaction.user, orderId);
 
-          await pool.query(`UPDATE orders SET receipt_channel_id=$1 WHERE order_id=$2`, [
+          await pool.query(`UPDATE orders SET receipt_channel_id=$1, updated_at=NOW() WHERE order_id=$2`, [
             receiptChannel.id,
             orderId,
           ]);
@@ -3525,7 +4084,8 @@ client.on("interactionCreate", async (interaction) => {
                 shipping,
                 total,
                 shippingProfile,
-                "pending"
+                "pending",
+                marketingConsentStatus
               ),
             ],
             components: staffReceiptControls(orderId, "pending"),
@@ -3554,7 +4114,7 @@ client.on("interactionCreate", async (interaction) => {
         }
       }
 
-          /* ---------------------------- ORDER ACTIONS ------------------------- */
+      /* ---------------------------- ORDER ACTIONS ------------------------- */
 
       if (customId.startsWith("staff_mark_paid:")) {
         const [, orderIdStr] = customId.split(":");
@@ -3564,7 +4124,7 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
-        await pool.query(`UPDATE orders SET status='paid' WHERE order_id=$1`, [orderId]);
+        await pool.query(`UPDATE orders SET status='paid', updated_at=NOW() WHERE order_id=$1`, [orderId]);
 
         await interaction.update({
           content: `✅ Order #${orderId} marked as paid.`,
@@ -3584,7 +4144,7 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
-        await pool.query(`UPDATE orders SET status='dispatched' WHERE order_id=$1`, [orderId]);
+        await pool.query(`UPDATE orders SET status='dispatched', updated_at=NOW() WHERE order_id=$1`, [orderId]);
 
         await interaction.update({
           content: `📦 Order #${orderId} marked as dispatched.`,
@@ -3635,7 +4195,7 @@ client.on("interactionCreate", async (interaction) => {
           );
         }
 
-        await pool.query(`UPDATE orders SET status='cancelled' WHERE order_id=$1`, [orderId]);
+        await pool.query(`UPDATE orders SET status='cancelled', updated_at=NOW() WHERE order_id=$1`, [orderId]);
 
         await interaction.update({
           content: `❌ Order #${orderId} has been cancelled.`,
@@ -3685,7 +4245,7 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
 
-        await pool.query(`UPDATE orders SET status='completed' WHERE order_id=$1`, [orderId]);
+        await pool.query(`UPDATE orders SET status='completed', updated_at=NOW() WHERE order_id=$1`, [orderId]);
 
         await interaction.update({
           content: `✅ Order #${orderId} marked as completed. Closing this channel in 5 seconds...`,
@@ -4184,7 +4744,14 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "All fields are required.", flags: 64 });
         }
 
-        await upsertProfile(interaction.user.id, full_name, email, phone, { full_address, country });
+        await upsertProfile(
+          interaction.user.id,
+          interaction.user.tag,
+          full_name,
+          email,
+          phone,
+          { full_address, country }
+        );
 
         const payload = {
           content: "✅ Details saved. Choose a category:",
@@ -4200,16 +4767,34 @@ client.on("interactionCreate", async (interaction) => {
             .setURL(`https://discord.com/channels/${interaction.guild.id}/${channel.id}`)
         );
 
+        const consentRow = new ActionRowBuilder().addComponents(
+          new ButtonBuilder()
+            .setCustomId("marketing_consent_yes")
+            .setLabel("Marketing: Yes")
+            .setStyle(ButtonStyle.Success),
+          new ButtonBuilder()
+            .setCustomId("marketing_consent_no")
+            .setLabel("Marketing: No")
+            .setStyle(ButtonStyle.Danger),
+          new ButtonBuilder()
+            .setCustomId("marketing_consent_skip")
+            .setLabel("Skip")
+            .setStyle(ButtonStyle.Secondary)
+        );
+
         await interaction.editReply({
-          content: `✅ Details saved. Your shop channel is ready.\nIt will auto close after 5 minutes of inactivity.`,
-          components: [continueOrderRow],
+          content:
+            `✅ Details saved. Your shop channel is ready.\n` +
+            `It will auto close after 5 minutes of inactivity.\n\n` +
+            `Optional: choose whether you want to receive future marketing updates.`,
+          components: [continueOrderRow, consentRow],
         });
 
         setTimeout(async () => {
           try {
             await interaction.deleteReply();
           } catch {}
-        }, 20000);
+        }, 30000);
 
         return;
       }
@@ -4456,13 +5041,21 @@ client.on("interactionCreate", async (interaction) => {
         const order = orderRes.rows[0];
 
         const itemsRes = await pool.query(
-          `SELECT name, qty, price_pence FROM order_items WHERE order_id=$1 ORDER BY id ASC`,
+          `SELECT name, qty, price_pence, sku, size, color FROM order_items WHERE order_id=$1 ORDER BY id ASC`,
           [orderId]
         );
 
         const itemLines = itemsRes.rows.map(
-          (it) => `• ${it.name} × ${it.qty} — ${money(it.qty * it.price_pence)}`
+          (it) =>
+            `• ${it.name} (${it.size}, ${it.color}) × ${it.qty} — ${money(it.qty * it.price_pence)} • SKU ${it.sku}`
         );
+
+        const consentValue =
+          order.marketing_consent_status === true
+            ? "Yes"
+            : order.marketing_consent_status === false
+              ? "No"
+              : "Not recorded";
 
         const embed = new EmbedBuilder()
           .setTitle(`Order #${orderId}`)
@@ -4470,9 +5063,35 @@ client.on("interactionCreate", async (interaction) => {
             { name: "Status", value: order.status || "unknown", inline: true },
             { name: "Total", value: money(order.total_pence || 0), inline: true },
             { name: "User ID", value: order.user_id || "unknown", inline: true },
+            { name: "Username", value: order.username || "Unknown", inline: true },
+            { name: "Email", value: order.email || "Unknown", inline: true },
+            { name: "Phone", value: order.phone || "Unknown", inline: true },
+            { name: "Customer Name", value: order.full_name || "Unknown", inline: true },
+            { name: "Country", value: order.country || "Unknown", inline: true },
             {
               name: "Receipt Channel",
               value: order.receipt_channel_id ? `<#${order.receipt_channel_id}>` : "None",
+            },
+            {
+              name: "Marketing Consent",
+              value: consentValue,
+              inline: true,
+            },
+            {
+              name: "Consent Timestamp",
+              value: order.marketing_consent_timestamp
+                ? `<t:${Math.floor(new Date(order.marketing_consent_timestamp).getTime() / 1000)}:F>`
+                : "None",
+              inline: true,
+            },
+            {
+              name: "Shipping Info",
+              value:
+                `${order.full_name || "Unknown"}\n` +
+                `${order.email || "Unknown"}\n` +
+                `${order.phone || "Unknown"}\n` +
+                `${order.full_address || "Unknown"}\n` +
+                `${order.country || "Unknown"}`,
             },
             { name: "Items", value: itemLines.join("\n") || "_No items_" }
           )
@@ -4480,6 +5099,55 @@ client.on("interactionCreate", async (interaction) => {
 
         return interaction.reply({
           embeds: [embed],
+          flags: 64,
+        });
+      }
+
+      if (customId === "staff_customer_lookup_modal") {
+        const lookupValue = interaction.fields.getTextInputValue("lookup_customer_value")?.trim();
+
+        if (!lookupValue) {
+          return interaction.reply({ content: "Enter a lookup value.", flags: 64 });
+        }
+
+        const res = await pool.query(
+          `
+          SELECT
+            discord_user_id,
+            username,
+            full_name,
+            email,
+            phone,
+            full_shipping_info,
+            country,
+            first_order_date,
+            last_order_date,
+            total_orders,
+            marketing_consent_status,
+            marketing_consent_timestamp,
+            marketing_consent_source,
+            opt_out_status,
+            updated_at
+          FROM customer_leads
+          WHERE discord_user_id = $1
+             OR LOWER(COALESCE(email, '')) = LOWER($1)
+             OR LOWER(COALESCE(phone, '')) = LOWER($1)
+             OR LOWER(COALESCE(username, '')) = LOWER($1)
+          ORDER BY COALESCE(last_order_date, updated_at) DESC
+          LIMIT 1
+          `,
+          [lookupValue]
+        );
+
+        if (!res.rows.length) {
+          return interaction.reply({
+            content: "Customer / lead not found.",
+            flags: 64,
+          });
+        }
+
+        return interaction.reply({
+          embeds: [buildCustomerLeadLookupEmbed(res.rows[0])],
           flags: 64,
         });
       }
@@ -4709,8 +5377,7 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
     }
-
-    } catch (err) {
+  } catch (err) {
     console.error(err);
 
     if (!interaction.isRepliable()) return;
