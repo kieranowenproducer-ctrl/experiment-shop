@@ -1815,6 +1815,15 @@ function staffRenameCategoryModal(categoryId, currentName) {
   return modal;
 }
 
+/* ------------------------------ STAFF MODALS (SAFE) ------------------------------ */
+
+// SAFE helper (avoids Discord limits)
+function safeText(str, max = 80) {
+  return String(str || "").slice(0, max);
+}
+
+/* ------------------------------ ADD PRODUCT ------------------------------ */
+
 function staffAddProductModal(categoryId, categoryName) {
   const modal = new ModalBuilder()
     .setCustomId(`staff_add_product_modal:${categoryId}`)
@@ -1829,13 +1838,14 @@ function staffAddProductModal(categoryId, categoryName) {
 
   const nameInput = new TextInputBuilder()
     .setCustomId("product_name")
-    .setLabel(`Product name for ${truncate100(categoryName)}`)
+    .setLabel("Product name") // KEEP SHORT
     .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+    .setRequired(true)
+    .setPlaceholder(`Category: ${safeText(categoryName)}`);
 
   const priceInput = new TextInputBuilder()
     .setCustomId("price_gbp")
-    .setLabel("Price in GBP")
+    .setLabel("Price (GBP)")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setPlaceholder("Example: 19.99");
@@ -1857,53 +1867,26 @@ function staffAddProductModal(categoryId, categoryName) {
   return modal;
 }
 
-function staffRenameProductModal(sku, currentName) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_rename_product_modal:${sku}`)
-    .setTitle("Rename Product");
+/* ------------------------------ UPDATE STOCK ------------------------------ */
 
-  const nameInput = new TextInputBuilder()
-    .setCustomId("new_product_name")
-    .setLabel("New product name")
+function staffStockQtyModal(sku, label) {
+  const modal = new ModalBuilder()
+    .setCustomId(`staff_stock_qty_modal:${sku}`)
+    .setTitle("Update Stock");
+
+  const qtyInput = new TextInputBuilder()
+    .setCustomId("stock_qty")
+    .setLabel("New stock quantity") // SHORT
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
-    .setValue(String(currentName || "").slice(0, 4000));
+    .setPlaceholder(safeText(label || sku));
 
-  modal.addComponents(new ActionRowBuilder().addComponents(nameInput));
+  modal.addComponents(new ActionRowBuilder().addComponents(qtyInput));
+
   return modal;
 }
 
-function staffEditPriceModal(sku, currentPricePence) {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_edit_price_modal:${sku}`)
-    .setTitle("Change Price");
-
-  const priceInput = new TextInputBuilder()
-    .setCustomId("price_gbp")
-    .setLabel("New price in GBP")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setValue((Number(currentPricePence || 0) / 100).toFixed(2));
-
-  modal.addComponents(new ActionRowBuilder().addComponents(priceInput));
-  return modal;
-}
-
-function staffMemberSearchModal(action, title = "Find Member") {
-  const modal = new ModalBuilder()
-    .setCustomId(`staff_member_search_modal:${action}`)
-    .setTitle(title);
-
-  const searchInput = new TextInputBuilder()
-    .setCustomId("member_search")
-    .setLabel("Username, display name, or user ID")
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setPlaceholder("Example: james");
-
-  modal.addComponents(new ActionRowBuilder().addComponents(searchInput));
-  return modal;
-}
+/* ------------------------------ TIMEOUT ------------------------------ */
 
 function staffTimeoutModal(userId, label) {
   const modal = new ModalBuilder()
@@ -1912,17 +1895,17 @@ function staffTimeoutModal(userId, label) {
 
   const minutesInput = new TextInputBuilder()
     .setCustomId("timeout_minutes")
-    .setLabel("Timeout length in minutes")
+    .setLabel("Timeout (minutes)")
     .setStyle(TextInputStyle.Short)
     .setRequired(true)
     .setPlaceholder("Example: 60");
 
   const reasonInput = new TextInputBuilder()
     .setCustomId("timeout_reason")
-    .setLabel(`Reason for ${truncate100(label || userId)}`)
+    .setLabel("Reason") // SHORT
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false)
-    .setPlaceholder("Optional");
+    .setPlaceholder(safeText(label || userId));
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(minutesInput),
@@ -1932,6 +1915,8 @@ function staffTimeoutModal(userId, label) {
   return modal;
 }
 
+/* ------------------------------ BAN ------------------------------ */
+
 function staffBanModal(userId, label) {
   const modal = new ModalBuilder()
     .setCustomId(`staff_ban_modal:${userId}`)
@@ -1939,12 +1924,13 @@ function staffBanModal(userId, label) {
 
   const reasonInput = new TextInputBuilder()
     .setCustomId("ban_reason")
-    .setLabel(`Reason for ${truncate100(label || userId)}`)
+    .setLabel("Reason") // SHORT
     .setStyle(TextInputStyle.Paragraph)
     .setRequired(false)
-    .setPlaceholder("Optional");
+    .setPlaceholder(safeText(label || userId));
 
   modal.addComponents(new ActionRowBuilder().addComponents(reasonInput));
+
   return modal;
 }
 
