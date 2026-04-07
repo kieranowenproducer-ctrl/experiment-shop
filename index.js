@@ -840,6 +840,55 @@ async function initDb() {
       );
     }
   }
+
+    for (const [categoryName, items] of Object.entries(SAFE_SEED_CATALOG)) {
+    let categoryRes = await pool.query(
+      `SELECT category_id FROM categories WHERE category_name = $1 LIMIT 1`,
+      [categoryName]
+    );
+
+    let categoryId;
+
+    if (!categoryRes.rows.length) {
+      const maxRes = await pool.query(`SELECT COALESCE(MAX(sort_order), 0) AS max_sort FROM categories`);
+      const nextSort = Number(maxRes.rows[0]?.max_sort || 0) + 1;
+
+      const createdCategory = await pool.query(
+        `
+        INSERT INTO categories (category_name, sort_order, is_active, created_at, updated_at)
+        VALUES ($1, $2, TRUE, NOW(), NOW())
+        RETURNING category_id
+        `,
+        [categoryName, nextSort]
+      );
+
+      categoryId = createdCategory.rows[0].category_id;
+    } else {
+      categoryId = categoryRes.rows[0].category_id;
+    }
+
+    for (const item of items) {
+      await pool.query(
+        `
+        INSERT INTO products (
+          category_id, sku, product_name, price_pence, default_stock_qty, is_active, created_at, updated_at
+        )
+        VALUES ($1, $2, $3, $4, $5, TRUE, NOW(), NOW())
+        ON CONFLICT (sku) DO NOTHING
+        `,
+        [categoryId, item.sku, item.name, item.price_pence, item.stock_qty]
+      );
+
+      await pool.query(
+        `
+        INSERT INTO stock_items (sku, stock_qty, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (sku) DO NOTHING
+        `,
+        [item.sku, item.stock_qty]
+      );
+    }
+  }
 }
 
 /* --------------------------- CATEGORY / PRODUCT -------------------------- */
@@ -2047,6 +2096,25 @@ async function categorySelectComponents() {
 
 async function itemSelectComponents(categoryId) {
   const items = (await getProductsByCategoryId(categoryId)).slice(0, 25);
+
+  if (!items.length) {
+    return [
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId("browse_categories")
+          .setLabel("Back to Categories")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId("shop_view_cart")
+          .setLabel("View Basket")
+          .setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder()
+          .setCustomId("shop_close_session")
+          .setLabel("Close Shop")
+          .setStyle(ButtonStyle.Danger)
+      ),
+    ];
+  }
 
   const options = items.map((it) => ({
     label: truncate100(it.product_name),
@@ -3856,6 +3924,32 @@ client.on("interactionCreate", async (interaction) => {
 
         const categoryId = interaction.values[0];
         const category = await getCategoryById(categoryId);
+        const products = await getProductsByCategoryId(categoryId);
+
+        if (!products.length) {
+          return interaction.update({
+            content:
+              `Category selected: **${category?.category_name || "Unknown"}**\n` +
+              `There are currently no products available in this category.`,
+            components: [
+              new ActionRowBuilder().addComponents(
+                new ButtonBuilder()
+                  .setCustomId("browse_categories")
+                  .setLabel("Back to Categories")
+                  .setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder()
+                  .setCustomId("shop_view_cart")
+                  .setLabel("View Basket")
+                  .setStyle(ButtonStyle.Secondary),
+                new ButtonBuilder()
+                  .setCustomId("shop_close_session")
+                  .setLabel("Close Shop")
+                  .setStyle(ButtonStyle.Danger)
+              ),
+            ],
+          });
+        }
+
         const itemComponents = await itemSelectComponents(categoryId);
 
         return interaction.update({
