@@ -409,6 +409,73 @@ function formatFullShippingInfo({ fullName, email, phone, fullAddress, country }
     .join("\n");
 }
 
+function formatConsentValue(value) {
+  if (value === true) return "Yes";
+  if (value === false) return "No";
+  return "Not recorded";
+}
+
+function formatOptOutValue(value) {
+  return value ? "Yes" : "No";
+}
+
+function formatDiscordTimestamp(value, fallback = "None") {
+  if (!value) return fallback;
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return fallback;
+
+  return `<t:${Math.floor(date.getTime() / 1000)}:F>`;
+}
+
+function leadDisplayName(lead) {
+  return (
+    nullIfBlank(lead?.full_name) ||
+    nullIfBlank(lead?.username) ||
+    nullIfBlank(lead?.email) ||
+    nullIfBlank(lead?.phone) ||
+    nullIfBlank(lead?.discord_user_id) ||
+    "Unknown"
+  );
+}
+
+function truncateForField(value, max = 1024, fallback = "None") {
+  const str = String(value || "").trim();
+  if (!str) return fallback;
+  if (str.length <= max) return str;
+  return `${str.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function getCustomerLeadBrowserPageSize() {
+  return typeof CUSTOMER_BROWSER_PAGE_SIZE === "number" && CUSTOMER_BROWSER_PAGE_SIZE > 0
+    ? CUSTOMER_BROWSER_PAGE_SIZE
+    : 10;
+}
+
+function getCustomerLeadBrowserPageData(leads, page = 0) {
+  const pageSize = getCustomerLeadBrowserPageSize();
+  const totalPages = Math.max(1, Math.ceil(leads.length / pageSize));
+  const safePage = Math.max(0, Math.min(page, totalPages - 1));
+  const start = safePage * pageSize;
+  const pageLeads = leads.slice(start, start + pageSize);
+
+  return {
+    totalPages,
+    safePage,
+    start,
+    pageLeads,
+    pageSize,
+  };
+}
+
+function customerBrowserViewTitle(view) {
+  if (view === "consented") return "Customers / Leads — Marketing Yes";
+  if (view === "opted_out") return "Customers / Leads — Opted Out";
+  if (view === "ordered") return "Customers / Leads — Ordered";
+  if (view === "recent") return "Customers / Leads — Recent";
+  return "Customers / Leads — All";
+}
+
 /* -------------------------- MODERATION HELPERS -------------------------- */
 
 async function searchGuildMembers(guild, search, options = {}) {
@@ -912,13 +979,38 @@ async function initDb() {
   `);
 
   await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_customer_leads_email
     ON customer_leads (email);
   `);
 
   await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_customer_leads_phone
+    ON customer_leads (phone);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_customer_leads_username
+    ON customer_leads (username);
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_customer_leads_last_order_date
     ON customer_leads (last_order_date DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_customer_leads_updated_at
+    ON customer_leads (updated_at DESC);
   `);
 
   await pool.query(`
@@ -1447,13 +1539,24 @@ async function upsertCustomerLeadProfile({
     throw new Error("User ID is required for customer lead upsert.");
   }
 
+  const cleanUsername = nullIfBlank(username);
+  const cleanFullName = nullIfBlank(fullName);
+  const cleanEmail = nullIfBlank(email);
+  const cleanPhone = nullIfBlank(phone);
+  const cleanFullAddress = nullIfBlank(fullAddress);
+  const cleanCountry = nullIfBlank(country);
+
   const fullShippingInfo = formatFullShippingInfo({
-    fullName,
-    email,
-    phone,
-    fullAddress,
-    country,
+    fullName: cleanFullName,
+    email: cleanEmail,
+    phone: cleanPhone,
+    fullAddress: cleanFullAddress,
+    country: cleanCountry,
   });
+
+  const hasConsentValue = typeof marketingConsentStatus === "boolean";
+  const consentTimestamp = hasConsentValue ? marketingConsentTimestamp || new Date() : null;
+  const consentSource = hasConsentValue ? nullIfBlank(marketingConsentSource) : null;
 
   await pool.query(
     `
@@ -1468,9 +1571,10 @@ async function upsertCustomerLeadProfile({
       marketing_consent_status,
       marketing_consent_timestamp,
       marketing_consent_source,
+      opt_out_status,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
     ON CONFLICT (discord_user_id) DO UPDATE
     SET username = COALESCE(EXCLUDED.username, customer_leads.username),
         full_name = COALESCE(EXCLUDED.full_name, customer_leads.full_name),
@@ -1478,22 +1582,37 @@ async function upsertCustomerLeadProfile({
         phone = COALESCE(EXCLUDED.phone, customer_leads.phone),
         full_shipping_info = COALESCE(EXCLUDED.full_shipping_info, customer_leads.full_shipping_info),
         country = COALESCE(EXCLUDED.country, customer_leads.country),
-        marketing_consent_status = COALESCE(EXCLUDED.marketing_consent_status, customer_leads.marketing_consent_status),
-        marketing_consent_timestamp = COALESCE(EXCLUDED.marketing_consent_timestamp, customer_leads.marketing_consent_timestamp),
-        marketing_consent_source = COALESCE(EXCLUDED.marketing_consent_source, customer_leads.marketing_consent_source),
+        marketing_consent_status = CASE
+          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_status
+          ELSE EXCLUDED.marketing_consent_status
+        END,
+        marketing_consent_timestamp = CASE
+          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_timestamp
+          ELSE EXCLUDED.marketing_consent_timestamp
+        END,
+        marketing_consent_source = CASE
+          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_source
+          ELSE EXCLUDED.marketing_consent_source
+        END,
+        opt_out_status = CASE
+          WHEN EXCLUDED.marketing_consent_status = FALSE THEN TRUE
+          WHEN EXCLUDED.marketing_consent_status = TRUE THEN FALSE
+          ELSE customer_leads.opt_out_status
+        END,
         updated_at = NOW()
     `,
     [
       cleanUserId,
-      nullIfBlank(username),
-      nullIfBlank(fullName),
-      nullIfBlank(email),
-      nullIfBlank(phone),
+      cleanUsername,
+      cleanFullName,
+      cleanEmail,
+      cleanPhone,
       nullIfBlank(fullShippingInfo),
-      nullIfBlank(country),
-      typeof marketingConsentStatus === "boolean" ? marketingConsentStatus : null,
-      marketingConsentTimestamp || null,
-      nullIfBlank(marketingConsentSource),
+      cleanCountry,
+      hasConsentValue ? marketingConsentStatus : null,
+      consentTimestamp,
+      consentSource,
+      hasConsentValue ? !marketingConsentStatus : false,
     ]
   );
 }
@@ -1516,13 +1635,24 @@ async function recordCustomerLeadOrder({
     throw new Error("User ID is required for customer lead order recording.");
   }
 
+  const cleanUsername = nullIfBlank(username);
+  const cleanFullName = nullIfBlank(fullName);
+  const cleanEmail = nullIfBlank(email);
+  const cleanPhone = nullIfBlank(phone);
+  const cleanFullAddress = nullIfBlank(fullAddress);
+  const cleanCountry = nullIfBlank(country);
+
   const fullShippingInfo = formatFullShippingInfo({
-    fullName,
-    email,
-    phone,
-    fullAddress,
-    country,
+    fullName: cleanFullName,
+    email: cleanEmail,
+    phone: cleanPhone,
+    fullAddress: cleanFullAddress,
+    country: cleanCountry,
   });
+
+  const hasConsentValue = typeof marketingConsentStatus === "boolean";
+  const consentTimestamp = hasConsentValue ? marketingConsentTimestamp || orderCreatedAt || new Date() : null;
+  const consentSource = hasConsentValue ? nullIfBlank(marketingConsentSource) : null;
 
   await pool.query(
     `
@@ -1540,9 +1670,10 @@ async function recordCustomerLeadOrder({
       marketing_consent_status,
       marketing_consent_timestamp,
       marketing_consent_source,
+      opt_out_status,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 1, $9, $10, $11, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 1, $9, $10, $11, $12, NOW())
     ON CONFLICT (discord_user_id) DO UPDATE
     SET username = COALESCE(EXCLUDED.username, customer_leads.username),
         full_name = COALESCE(EXCLUDED.full_name, customer_leads.full_name),
@@ -1557,23 +1688,38 @@ async function recordCustomerLeadOrder({
           ELSE GREATEST(customer_leads.last_order_date, EXCLUDED.last_order_date)
         END,
         total_orders = customer_leads.total_orders + 1,
-        marketing_consent_status = COALESCE(EXCLUDED.marketing_consent_status, customer_leads.marketing_consent_status),
-        marketing_consent_timestamp = COALESCE(EXCLUDED.marketing_consent_timestamp, customer_leads.marketing_consent_timestamp),
-        marketing_consent_source = COALESCE(EXCLUDED.marketing_consent_source, customer_leads.marketing_consent_source),
+        marketing_consent_status = CASE
+          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_status
+          ELSE EXCLUDED.marketing_consent_status
+        END,
+        marketing_consent_timestamp = CASE
+          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_timestamp
+          ELSE EXCLUDED.marketing_consent_timestamp
+        END,
+        marketing_consent_source = CASE
+          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_source
+          ELSE EXCLUDED.marketing_consent_source
+        END,
+        opt_out_status = CASE
+          WHEN EXCLUDED.marketing_consent_status = FALSE THEN TRUE
+          WHEN EXCLUDED.marketing_consent_status = TRUE THEN FALSE
+          ELSE customer_leads.opt_out_status
+        END,
         updated_at = NOW()
     `,
     [
       cleanUserId,
-      nullIfBlank(username),
-      nullIfBlank(fullName),
-      nullIfBlank(email),
-      nullIfBlank(phone),
+      cleanUsername,
+      cleanFullName,
+      cleanEmail,
+      cleanPhone,
       nullIfBlank(fullShippingInfo),
-      nullIfBlank(country),
+      cleanCountry,
       orderCreatedAt,
-      typeof marketingConsentStatus === "boolean" ? marketingConsentStatus : null,
-      marketingConsentTimestamp || null,
-      nullIfBlank(marketingConsentSource),
+      hasConsentValue ? marketingConsentStatus : null,
+      consentTimestamp,
+      consentSource,
+      hasConsentValue ? !marketingConsentStatus : false,
     ]
   );
 }
@@ -1594,20 +1740,18 @@ async function updateCustomerLeadConsent(userId, consentStatus, source = "shop_c
       marketing_consent_status,
       marketing_consent_timestamp,
       marketing_consent_source,
+      opt_out_status,
       updated_at
     )
-    VALUES ($1, $2, NOW(), $3, NOW())
+    VALUES ($1, $2, NOW(), $3, $4, NOW())
     ON CONFLICT (discord_user_id) DO UPDATE
     SET marketing_consent_status = EXCLUDED.marketing_consent_status,
         marketing_consent_timestamp = EXCLUDED.marketing_consent_timestamp,
         marketing_consent_source = EXCLUDED.marketing_consent_source,
-        opt_out_status = CASE
-          WHEN EXCLUDED.marketing_consent_status = TRUE THEN FALSE
-          ELSE customer_leads.opt_out_status
-        END,
+        opt_out_status = EXCLUDED.opt_out_status,
         updated_at = NOW()
     `,
-    [cleanUserId, consentStatus, nullIfBlank(source)]
+    [cleanUserId, consentStatus, nullIfBlank(source), !consentStatus]
   );
 }
 
@@ -1629,6 +1773,7 @@ async function getCustomerLeadByUserId(userId) {
       marketing_consent_timestamp,
       marketing_consent_source,
       opt_out_status,
+      created_at,
       updated_at
     FROM customer_leads
     WHERE discord_user_id = $1
@@ -1641,7 +1786,7 @@ async function getCustomerLeadByUserId(userId) {
 }
 
 async function getRecentCustomerLeads(limit = 10) {
-  const safeLimit = Math.max(1, Math.min(25, Number(limit || 10)));
+  const safeLimit = Math.max(1, Math.min(100, Number(limit || 10)));
 
   const res = await pool.query(
     `
@@ -1660,17 +1805,327 @@ async function getRecentCustomerLeads(limit = 10) {
       marketing_consent_timestamp,
       marketing_consent_source,
       opt_out_status,
+      created_at,
       updated_at
     FROM customer_leads
     ORDER BY
-      COALESCE(last_order_date, updated_at) DESC,
-      updated_at DESC
+      COALESCE(last_order_date, updated_at, created_at) DESC,
+      updated_at DESC,
+      created_at DESC
     LIMIT $1
     `,
     [safeLimit]
   );
 
   return res.rows;
+}
+
+async function getCustomerLeadsForBrowser(view = "all", limit = 250) {
+  const safeLimit = Math.max(1, Math.min(500, Number(limit || 250)));
+
+  let whereSql = "";
+  if (view === "consented") {
+    whereSql = `WHERE marketing_consent_status = TRUE`;
+  } else if (view === "opted_out") {
+    whereSql = `WHERE opt_out_status = TRUE OR marketing_consent_status = FALSE`;
+  } else if (view === "ordered") {
+    whereSql = `WHERE COALESCE(total_orders, 0) > 0`;
+  } else if (view === "recent") {
+    whereSql = "";
+  }
+
+  const res = await pool.query(
+    `
+    SELECT
+      discord_user_id,
+      username,
+      full_name,
+      email,
+      phone,
+      full_shipping_info,
+      country,
+      first_order_date,
+      last_order_date,
+      total_orders,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      opt_out_status,
+      created_at,
+      updated_at
+    FROM customer_leads
+    ${whereSql}
+    ORDER BY
+      COALESCE(last_order_date, updated_at, created_at) DESC,
+      updated_at DESC,
+      created_at DESC,
+      total_orders DESC,
+      full_name ASC NULLS LAST
+    LIMIT $1
+    `,
+    [safeLimit]
+  );
+
+  return res.rows;
+}
+
+async function findCustomerLeadByLookupValue(lookupValue) {
+  const needle = String(lookupValue || "").trim();
+  if (!needle) return null;
+
+  const exactRes = await pool.query(
+    `
+    SELECT
+      discord_user_id,
+      username,
+      full_name,
+      email,
+      phone,
+      full_shipping_info,
+      country,
+      first_order_date,
+      last_order_date,
+      total_orders,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      opt_out_status,
+      created_at,
+      updated_at
+    FROM customer_leads
+    WHERE discord_user_id = $1
+       OR LOWER(COALESCE(email, '')) = LOWER($1)
+       OR LOWER(COALESCE(phone, '')) = LOWER($1)
+       OR LOWER(COALESCE(username, '')) = LOWER($1)
+       OR LOWER(COALESCE(full_name, '')) = LOWER($1)
+    ORDER BY COALESCE(last_order_date, updated_at, created_at) DESC
+    LIMIT 1
+    `,
+    [needle]
+  );
+
+  if (exactRes.rows.length) {
+    return exactRes.rows[0];
+  }
+
+  const likeNeedle = `%${needle.toLowerCase()}%`;
+  const fuzzyRes = await pool.query(
+    `
+    SELECT
+      discord_user_id,
+      username,
+      full_name,
+      email,
+      phone,
+      full_shipping_info,
+      country,
+      first_order_date,
+      last_order_date,
+      total_orders,
+      marketing_consent_status,
+      marketing_consent_timestamp,
+      marketing_consent_source,
+      opt_out_status,
+      created_at,
+      updated_at
+    FROM customer_leads
+    WHERE LOWER(COALESCE(full_name, '')) LIKE $1
+       OR LOWER(COALESCE(email, '')) LIKE $1
+       OR LOWER(COALESCE(phone, '')) LIKE $1
+       OR LOWER(COALESCE(username, '')) LIKE $1
+       OR LOWER(COALESCE(discord_user_id, '')) LIKE $1
+    ORDER BY COALESCE(last_order_date, updated_at, created_at) DESC
+    LIMIT 1
+    `,
+    [likeNeedle]
+  );
+
+  return fuzzyRes.rows[0] || null;
+}
+
+function buildCustomerLeadLookupEmbed(lead) {
+  return new EmbedBuilder()
+    .setTitle("Customer / Lead")
+    .addFields(
+      { name: "Discord User ID", value: truncateForField(lead.discord_user_id, 1024, "Unknown"), inline: true },
+      { name: "Username", value: truncateForField(lead.username, 1024, "Unknown"), inline: true },
+      { name: "Total Orders", value: String(Number(lead.total_orders || 0)), inline: true },
+      { name: "Full Name", value: truncateForField(lead.full_name, 1024, "Unknown"), inline: true },
+      { name: "Email", value: truncateForField(lead.email, 1024, "Unknown"), inline: true },
+      { name: "Phone", value: truncateForField(lead.phone, 1024, "Unknown"), inline: true },
+      {
+        name: "First Order Date",
+        value: formatDiscordTimestamp(lead.first_order_date, "None"),
+        inline: true,
+      },
+      {
+        name: "Last Order Date",
+        value: formatDiscordTimestamp(lead.last_order_date, "None"),
+        inline: true,
+      },
+      {
+        name: "Marketing Consent",
+        value: formatConsentValue(lead.marketing_consent_status),
+        inline: true,
+      },
+      {
+        name: "Consent Timestamp",
+        value: formatDiscordTimestamp(lead.marketing_consent_timestamp, "None"),
+        inline: true,
+      },
+      {
+        name: "Opt Out",
+        value: formatOptOutValue(lead.opt_out_status),
+        inline: true,
+      },
+      {
+        name: "Country",
+        value: truncateForField(lead.country, 1024, "Unknown"),
+        inline: true,
+      },
+      {
+        name: "Consent Source",
+        value: truncateForField(lead.marketing_consent_source, 1024, "None"),
+        inline: true,
+      },
+      {
+        name: "Shipping Info",
+        value: truncateForField(lead.full_shipping_info, 1024, "None stored"),
+      }
+    )
+    .setTimestamp(new Date(lead.updated_at || lead.created_at || Date.now()));
+}
+
+function buildRecentCustomerLeadsEmbed(leads) {
+  const description = leads.length
+    ? leads
+        .map((lead, index) => {
+          const displayName = leadDisplayName(lead);
+          const email = lead.email || "No email";
+          const phone = lead.phone || "No phone";
+          const consent = formatConsentValue(lead.marketing_consent_status);
+          const orders = Number(lead.total_orders || 0);
+          return (
+            `${index + 1}. **${truncate100(displayName)}**\n` +
+            `Email: ${truncate100(email)}\n` +
+            `Phone: ${truncate100(phone)}\n` +
+            `Consent: ${consent}\n` +
+            `Orders: ${orders}`
+          );
+        })
+        .join("\n\n")
+    : "_No customer or lead records found_";
+
+  return new EmbedBuilder()
+    .setTitle("Recent Customers / Leads")
+    .setDescription(description);
+}
+
+function buildCustomerLeadBrowserEmbed(leads, view = "all", page = 0) {
+  const { totalPages, safePage, start, pageLeads } = getCustomerLeadBrowserPageData(leads, page);
+
+  const description = pageLeads.length
+    ? pageLeads
+        .map((lead, index) => {
+          const position = start + index + 1;
+          const displayName = leadDisplayName(lead);
+          const email = lead.email || "No email";
+          const phone = lead.phone || "No phone";
+          const consent = formatConsentValue(lead.marketing_consent_status);
+          const orders = Number(lead.total_orders || 0);
+
+          return (
+            `${position}. **${truncate100(displayName)}**\n` +
+            `Email: ${truncate100(email)}\n` +
+            `Phone: ${truncate100(phone)}\n` +
+            `Consent: ${consent}\n` +
+            `Orders: ${orders}`
+          );
+        })
+        .join("\n\n")
+    : "_No customer or lead records found_";
+
+  return new EmbedBuilder()
+    .setTitle(customerBrowserViewTitle(view))
+    .setDescription(description)
+    .addFields(
+      { name: "Results", value: String(leads.length), inline: true },
+      { name: "Page", value: `${safePage + 1}/${totalPages}`, inline: true }
+    );
+}
+
+function buildCustomerLeadBrowserSelectMenu(leads, view = "all", page = 0) {
+  const { pageLeads } = getCustomerLeadBrowserPageData(leads, page);
+
+  if (!pageLeads.length) return null;
+
+  return new ActionRowBuilder().addComponents(
+    new StringSelectMenuBuilder()
+      .setCustomId(`staff_customer_browser_select:${view}:${page}`)
+      .setPlaceholder("Select a customer…")
+      .addOptions(
+        pageLeads.map((lead) => ({
+          label: truncate100(leadDisplayName(lead)),
+          description: truncate100(
+            `${lead.email || lead.phone || lead.discord_user_id || "No contact"} • Orders ${Number(lead.total_orders || 0)} • ${formatConsentValue(lead.marketing_consent_status)}`
+          ),
+          value: String(lead.discord_user_id),
+        }))
+      )
+  );
+}
+
+function buildCustomerLeadBrowserComponents(leads, view = "all", page = 0) {
+  const { totalPages, safePage } = getCustomerLeadBrowserPageData(leads, page);
+  const rows = [];
+
+  const selectRow = buildCustomerLeadBrowserSelectMenu(leads, view, safePage);
+  if (selectRow) rows.push(selectRow);
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`staff_customer_browser_prev:${view}:${safePage}`)
+        .setLabel("Previous")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage <= 0),
+      new ButtonBuilder()
+        .setCustomId(`staff_customer_browser_next:${view}:${safePage}`)
+        .setLabel("Next")
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(safePage >= totalPages - 1),
+      new ButtonBuilder()
+        .setCustomId(`staff_customer_browser_refresh:${view}:${safePage}`)
+        .setLabel("Refresh")
+        .setStyle(ButtonStyle.Primary)
+    )
+  );
+
+  rows.push(
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("staff_panel_home")
+        .setLabel("Back")
+        .setStyle(ButtonStyle.Secondary)
+    )
+  );
+
+  return rows;
+}
+
+function buildCustomerLeadDetailComponents(lead, view = "all", page = 0) {
+  return [
+    new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`staff_customer_browser_refresh:${view}:${page}`)
+        .setLabel("Back to List")
+        .setStyle(ButtonStyle.Secondary),
+      new ButtonBuilder()
+        .setCustomId("staff_lookup_customer")
+        .setLabel("Lookup")
+        .setStyle(ButtonStyle.Primary)
+    ),
+  ];
 }
 
 /* ------------------------------- CART HELPERS --------------------------- */
@@ -2022,12 +2477,7 @@ function receiptEmbed(
     },
     {
       name: "Marketing Consent",
-      value:
-        marketingConsentStatus === true
-          ? "Yes"
-          : marketingConsentStatus === false
-            ? "No"
-            : "Not recorded",
+      value: formatConsentValue(marketingConsentStatus),
       inline: true,
     },
     {
@@ -2270,7 +2720,7 @@ function staffCustomerLookupModal() {
 
   const lookupInput = new TextInputBuilder()
     .setCustomId("lookup_customer_value")
-    .setLabel("Discord user ID, email, phone or username")
+    .setLabel("Discord user ID, full name, email, phone or username")
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
@@ -2876,82 +3326,19 @@ function staffOrdersPanel() {
   };
 }
 
-function buildCustomerLeadLookupEmbed(lead) {
-  const consentValue =
-    lead.marketing_consent_status === true
-      ? "Yes"
-      : lead.marketing_consent_status === false
-        ? "No"
-        : "Not recorded";
-
-  return new EmbedBuilder()
-    .setTitle(`Customer / Lead`)
-    .addFields(
-      { name: "Discord User ID", value: lead.discord_user_id || "Unknown", inline: true },
-      { name: "Username", value: lead.username || "Unknown", inline: true },
-      { name: "Total Orders", value: String(Number(lead.total_orders || 0)), inline: true },
-      { name: "Full Name", value: lead.full_name || "Unknown", inline: true },
-      { name: "Email", value: lead.email || "Unknown", inline: true },
-      { name: "Phone", value: lead.phone || "Unknown", inline: true },
-      {
-        name: "First Order Date",
-        value: lead.first_order_date ? `<t:${Math.floor(new Date(lead.first_order_date).getTime() / 1000)}:F>` : "None",
-        inline: true,
-      },
-      {
-        name: "Last Order Date",
-        value: lead.last_order_date ? `<t:${Math.floor(new Date(lead.last_order_date).getTime() / 1000)}:F>` : "None",
-        inline: true,
-      },
-      {
-        name: "Marketing Consent",
-        value: consentValue,
-        inline: true,
-      },
-      {
-        name: "Consent Timestamp",
-        value: lead.marketing_consent_timestamp
-          ? `<t:${Math.floor(new Date(lead.marketing_consent_timestamp).getTime() / 1000)}:F>`
-          : "None",
-        inline: true,
-      },
-      {
-        name: "Opt Out",
-        value: lead.opt_out_status ? "Yes" : "No",
-        inline: true,
-      },
-      {
-        name: "Shipping Info",
-        value: lead.full_shipping_info || "None stored",
-      }
-    )
-    .setTimestamp(new Date(lead.updated_at || Date.now()));
-}
-
-function buildRecentCustomerLeadsEmbed(leads) {
-  const description = leads.length
-    ? leads
-        .map((lead, index) => {
-          const displayName = lead.full_name || lead.username || lead.discord_user_id;
-          const email = lead.email || "No email";
-          const orders = Number(lead.total_orders || 0);
-          return `${index + 1}. **${displayName}** • ${email} • Orders: ${orders}`;
-        })
-        .join("\n")
-    : "_No customer or lead records found_";
-
-  return new EmbedBuilder()
-    .setTitle("Recent Customers / Leads")
-    .setDescription(description);
-}
-
 function staffCustomersPanel() {
   return {
     content: `🟣 **Customers / Leads**`,
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_lookup_customer").setLabel("Lookup").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_recent_customers").setLabel("Recent").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder().setCustomId("staff_customer_browser_all").setLabel("View All").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_customer_browser_recent").setLabel("Recent").setStyle(ButtonStyle.Secondary),
+        new ButtonBuilder().setCustomId("staff_lookup_customer").setLabel("Lookup").setStyle(ButtonStyle.Secondary)
+      ),
+      new ActionRowBuilder().addComponents(
+        new ButtonBuilder().setCustomId("staff_customer_browser_ordered").setLabel("Ordered").setStyle(ButtonStyle.Primary),
+        new ButtonBuilder().setCustomId("staff_customer_browser_consented").setLabel("Marketing Yes").setStyle(ButtonStyle.Success),
+        new ButtonBuilder().setCustomId("staff_customer_browser_opted_out").setLabel("Opted Out").setStyle(ButtonStyle.Danger)
       ),
       navRow(),
     ],
@@ -3585,6 +3972,37 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.showModal(staffCustomerLookupModal());
       }
 
+      if (
+        customId === "staff_customer_browser_all" ||
+        customId === "staff_customer_browser_recent" ||
+        customId === "staff_customer_browser_ordered" ||
+        customId === "staff_customer_browser_consented" ||
+        customId === "staff_customer_browser_opted_out"
+      ) {
+        await interaction.deferUpdate();
+
+        const view =
+          customId === "staff_customer_browser_recent"
+            ? "recent"
+            : customId === "staff_customer_browser_ordered"
+              ? "ordered"
+              : customId === "staff_customer_browser_consented"
+                ? "consented"
+                : customId === "staff_customer_browser_opted_out"
+                  ? "opted_out"
+                  : "all";
+
+        const leads = await getCustomerLeadsForBrowser(view);
+
+        await interaction.message.edit({
+          content: `Browsing ${customerBrowserViewTitle(view).toLowerCase()}:`,
+          embeds: [buildCustomerLeadBrowserEmbed(leads, view, 0)],
+          components: buildCustomerLeadBrowserComponents(leads, view, 0),
+        });
+
+        return;
+      }
+
       if (customId === "staff_recent_customers") {
         const leads = await getRecentCustomerLeads(10);
 
@@ -3684,6 +4102,37 @@ client.on("interactionCreate", async (interaction) => {
         return;
       }
 
+      if (
+        customId.startsWith("staff_customer_browser_prev:") ||
+        customId.startsWith("staff_customer_browser_next:") ||
+        customId.startsWith("staff_customer_browser_refresh:")
+      ) {
+        await interaction.deferUpdate();
+
+        const [view, pageRaw] = customId.split(":").slice(1);
+        const currentPage = parseInt(pageRaw, 10) || 0;
+        const leads = await getCustomerLeadsForBrowser(view);
+
+        const { totalPages } = getCustomerLeadBrowserPageData(leads, currentPage);
+        let newPage = currentPage;
+
+        if (customId.startsWith("staff_customer_browser_prev:")) {
+          newPage = Math.max(0, currentPage - 1);
+        }
+
+        if (customId.startsWith("staff_customer_browser_next:")) {
+          newPage = Math.min(totalPages - 1, currentPage + 1);
+        }
+
+        await interaction.message.edit({
+          content: `Browsing ${customerBrowserViewTitle(view).toLowerCase()}:`,
+          embeds: [buildCustomerLeadBrowserEmbed(leads, view, newPage)],
+          components: buildCustomerLeadBrowserComponents(leads, view, newPage),
+        });
+
+        return;
+      }
+
       if (customId.startsWith("staff_member_apply_verify:")) {
         await interaction.deferUpdate();
 
@@ -3774,6 +4223,55 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.update({
           content: "✅ All stock reset to default values.",
           components: staffStockPanel().components,
+        });
+      }
+
+      if (customId.startsWith("staff_open_rename_product_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_price_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
+      }
+
+      if (customId.startsWith("staff_open_stock_modal_direct:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_move_product_flow:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `Choose the new category for **${product.product_name}** (${sku}):`,
+          components: await staffCategorySelect(
+            `staff_move_product_select_category:${sku}`,
+            "Choose a new category…"
+          ),
+        });
+      }
+
+      if (customId.startsWith("staff_delete_product_confirm:")) {
+        const [, sku] = customId.split(":");
+        const deleted = await deleteProduct(sku);
+        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
+          components: staffProductsPanel().components,
         });
       }
 
@@ -4015,7 +4513,7 @@ client.on("interactionCreate", async (interaction) => {
           const orderId = orderRes.rows[0].order_id;
           const orderCreatedAt = orderRes.rows[0].created_at || new Date();
 
-          for (const it of cart.items) {
+                  for (const it of cart.items) {
             await pool.query(
               `
               INSERT INTO order_items (order_id, sku, name, size, color, qty, price_pence)
@@ -4265,57 +4763,6 @@ client.on("interactionCreate", async (interaction) => {
 
         return;
       }
-
-      /* ----------------------- EXTRA PRODUCT BUTTONS ---------------------- */
-
-      if (customId.startsWith("staff_open_rename_product_modal:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_price_modal:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
-      }
-
-      if (customId.startsWith("staff_open_stock_modal_direct:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_move_product_flow:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content: `Choose the new category for **${product.product_name}** (${sku}):`,
-          components: await staffCategorySelect(
-            `staff_move_product_select_category:${sku}`,
-            "Choose a new category…"
-          ),
-        });
-      }
-
-      if (customId.startsWith("staff_delete_product_confirm:")) {
-        const [, sku] = customId.split(":");
-        const deleted = await deleteProduct(sku);
-        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
-          components: staffProductsPanel().components,
-        });
-      }
     }
 
     /* ------------------------- STRING SELECT MENUS ------------------------ */
@@ -4350,6 +4797,32 @@ client.on("interactionCreate", async (interaction) => {
           content: `Viewing member from ${memberBrowserTitle(view).toLowerCase()}:`,
           embeds: [buildMemberDetailEmbed(targetMember, view, page)],
           components: buildMemberDetailComponents(targetMember, view, page),
+        });
+
+        return;
+      }
+
+      if (customId.startsWith("staff_customer_browser_select:")) {
+        await interaction.deferUpdate();
+
+        const [, view, pageRaw] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetUserId = interaction.values[0];
+        const lead = await getCustomerLeadByUserId(targetUserId);
+
+        if (!lead) {
+          await interaction.message.edit({
+            content: "Could not find that customer or lead.",
+            embeds: [],
+            components: staffCustomersPanel().components,
+          });
+          return;
+        }
+
+        await interaction.message.edit({
+          content: `Viewing customer from ${customerBrowserViewTitle(view).toLowerCase()}:`,
+          embeds: [buildCustomerLeadLookupEmbed(lead)],
+          components: buildCustomerLeadDetailComponents(lead, view, page),
         });
 
         return;
@@ -5050,13 +5523,6 @@ client.on("interactionCreate", async (interaction) => {
             `• ${it.name} (${it.size}, ${it.color}) × ${it.qty} — ${money(it.qty * it.price_pence)} • SKU ${it.sku}`
         );
 
-        const consentValue =
-          order.marketing_consent_status === true
-            ? "Yes"
-            : order.marketing_consent_status === false
-              ? "No"
-              : "Not recorded";
-
         const embed = new EmbedBuilder()
           .setTitle(`Order #${orderId}`)
           .addFields(
@@ -5074,14 +5540,17 @@ client.on("interactionCreate", async (interaction) => {
             },
             {
               name: "Marketing Consent",
-              value: consentValue,
+              value: formatConsentValue(order.marketing_consent_status),
               inline: true,
             },
             {
               name: "Consent Timestamp",
-              value: order.marketing_consent_timestamp
-                ? `<t:${Math.floor(new Date(order.marketing_consent_timestamp).getTime() / 1000)}:F>`
-                : "None",
+              value: formatDiscordTimestamp(order.marketing_consent_timestamp, "None"),
+              inline: true,
+            },
+            {
+              name: "Consent Source",
+              value: order.marketing_consent_source || "None",
               inline: true,
             },
             {
@@ -5110,36 +5579,9 @@ client.on("interactionCreate", async (interaction) => {
           return interaction.reply({ content: "Enter a lookup value.", flags: 64 });
         }
 
-        const res = await pool.query(
-          `
-          SELECT
-            discord_user_id,
-            username,
-            full_name,
-            email,
-            phone,
-            full_shipping_info,
-            country,
-            first_order_date,
-            last_order_date,
-            total_orders,
-            marketing_consent_status,
-            marketing_consent_timestamp,
-            marketing_consent_source,
-            opt_out_status,
-            updated_at
-          FROM customer_leads
-          WHERE discord_user_id = $1
-             OR LOWER(COALESCE(email, '')) = LOWER($1)
-             OR LOWER(COALESCE(phone, '')) = LOWER($1)
-             OR LOWER(COALESCE(username, '')) = LOWER($1)
-          ORDER BY COALESCE(last_order_date, updated_at) DESC
-          LIMIT 1
-          `,
-          [lookupValue]
-        );
+        const lead = await findCustomerLeadByLookupValue(lookupValue);
 
-        if (!res.rows.length) {
+        if (!lead) {
           return interaction.reply({
             content: "Customer / lead not found.",
             flags: 64,
@@ -5147,7 +5589,7 @@ client.on("interactionCreate", async (interaction) => {
         }
 
         return interaction.reply({
-          embeds: [buildCustomerLeadLookupEmbed(res.rows[0])],
+          embeds: [buildCustomerLeadLookupEmbed(lead)],
           flags: 64,
         });
       }
