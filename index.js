@@ -2149,7 +2149,10 @@ async function addCartItem(userId, item) {
   const existingCartQty = await getCartQtyForSku(userId, item.sku);
 
   if (existingCartQty + item.qty > stockQty) {
-    throw new Error(`Only ${stockQty} in stock for ${item.name}.`);
+    return {
+      error: true,
+      message: `Only ${stockQty} left in stock for ${item.name}.`,
+    };
   }
 
   const cartId = await getOrCreateCart(userId);
@@ -2161,6 +2164,8 @@ async function addCartItem(userId, item) {
     `,
     [cartId, item.sku, item.name, item.size, item.color, item.qty, item.price_pence]
   );
+
+  return { error: false };
 }
 
 async function getCartSummary(userId) {
@@ -3926,14 +3931,21 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
 
-        await addCartItem(interaction.user.id, {
-          sku: item.sku,
-          name: item.product_name,
-          size: DEFAULT_SIZE,
-          color: DEFAULT_COLOR,
-          qty,
-          price_pence: item.price_pence,
-        });
+const addResult = await addCartItem(interaction.user.id, {
+  sku: item.sku,
+  name: item.product_name,
+  size: DEFAULT_SIZE,
+  color: DEFAULT_COLOR,
+  qty,
+  price_pence: item.price_pence,
+});
+
+if (addResult?.error) {
+  return interaction.update({
+    content: `❌ ${addResult.message}`,
+    components: await itemSelectComponents(categoryId),
+  });
+}
 
         const content = await buildCartMessage(interaction.user.id);
 
