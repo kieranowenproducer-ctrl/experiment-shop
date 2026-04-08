@@ -2157,13 +2157,15 @@ async function addCartItem(userId, item) {
 
   const cartId = await getOrCreateCart(userId);
 
-  await pool.query(
-    `
-    INSERT INTO cart_items (cart_id, sku, name, size, color, qty, price_pence)
-    VALUES ($1, $2, $3, $4, $5, $6, $7)
-    `,
-    [cartId, item.sku, item.name, item.size, item.color, item.qty, item.price_pence]
-  );
+await pool.query(
+  `
+  INSERT INTO cart_items (cart_id, sku, name, size, color, qty, price_pence)
+  VALUES ($1, $2, $3, $4, $5, $6, $7)
+  ON CONFLICT (cart_id, sku, size, color)
+  DO UPDATE SET qty = cart_items.qty + EXCLUDED.qty
+  `,
+  [cartId, item.sku, item.name, item.size, item.color, item.qty, item.price_pence]
+);
 
   return { error: false };
 }
@@ -2344,7 +2346,7 @@ async function hasUserPendingOrder(userId) {
     SELECT 1
     FROM orders
     WHERE user_id = $1
-      AND status IN ('pending', 'paid', 'dispatched')
+      AND status IN ('pending', 'paid')
     LIMIT 1
     `,
     [userId]
