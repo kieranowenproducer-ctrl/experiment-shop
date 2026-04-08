@@ -5636,17 +5636,32 @@ if (addResult?.error) {
           return interaction.reply({ content: "Enter a search term.", flags: 64 });
         }
 
+        await interaction.deferReply({ flags: 64 });
+
         const options = {};
         if (action === "add_verified") options.excludeVerified = true;
 
         const matches = await searchGuildMembers(interaction.guild, search, options);
 
         if (!matches.length) {
-          return interaction.reply({
+          return interaction.editReply({
             content: "No matching members found.",
-            flags: 64,
+            components: [],
           });
         }
+
+        return interaction.editReply({
+          content: "Choose a member:",
+          components: [
+            new ActionRowBuilder().addComponents(
+              new StringSelectMenuBuilder()
+                .setCustomId(`staff_member_search_select:${action}`)
+                .setPlaceholder("Select a member…")
+                .addOptions(memberSelectOptions(matches))
+            ),
+          ],
+        });
+      }
 
         return interaction.reply({
           content: "Choose a member:",
