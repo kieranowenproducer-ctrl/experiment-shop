@@ -2695,9 +2695,10 @@ function staffCustomerLookupModal() {
 
   const lookupInput = new TextInputBuilder()
     .setCustomId("lookup_customer_value")
-    .setLabel("Discord user ID, full name, email, phone or username")
+    .setLabel("User ID, name, email, phone or @user")
     .setStyle(TextInputStyle.Short)
-    .setRequired(true);
+    .setRequired(true)
+    .setPlaceholder("Example: james@email.com or 123456789");
 
   modal.addComponents(new ActionRowBuilder().addComponents(lookupInput));
   return modal;
@@ -3814,51 +3815,48 @@ client.on("interactionCreate", async (interaction) => {
 
       /* ---------------------- CUSTOMER EXPORT ACTIONS --------------------- */
 
-      if (customId === "staff_export_all_leads") {
+      if (customId === "staff_export_all_leads_csv") {
         if (!isStaff(interaction.member)) {
           return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
         await interaction.deferReply({ flags: 64 });
 
-        const rows = await getAllCustomerLeadsForExport();
-        const csv = buildCustomerLeadsCsv(rows);
+        const rows = await getCustomerLeadExportRows("all");
 
         return interaction.editReply({
-          content: `Exported ${rows.length} leads.`,
-          files: [{ attachment: Buffer.from(csv, "utf-8"), name: "all_leads_export.csv" }],
+          content: `✅ Exported ${rows.length} lead record(s).`,
+          files: [buildCustomerLeadCsvFile(rows, "all_leads_export.csv")],
         });
       }
 
-      if (customId === "staff_export_marketing_yes") {
+      if (customId === "staff_export_marketing_yes_csv") {
         if (!isStaff(interaction.member)) {
           return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
         await interaction.deferReply({ flags: 64 });
 
-        const rows = await getMarketingYesLeadsForExport();
-        const csv = buildCustomerLeadsCsv(rows);
+        const rows = await getCustomerLeadExportRows("marketing_yes");
 
         return interaction.editReply({
-          content: `Exported ${rows.length} marketing-consented users.`,
-          files: [{ attachment: Buffer.from(csv, "utf-8"), name: "marketing_yes_export.csv" }],
+          content: `✅ Exported ${rows.length} marketing consent record(s).`,
+          files: [buildCustomerLeadCsvFile(rows, "marketing_yes_export.csv")],
         });
       }
 
-      if (customId === "staff_export_ordered") {
+      if (customId === "staff_export_ordered_customers_csv") {
         if (!isStaff(interaction.member)) {
           return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
         await interaction.deferReply({ flags: 64 });
 
-        const rows = await getOrderedCustomersForExport();
-        const csv = buildCustomerLeadsCsv(rows);
+        const rows = await getCustomerLeadExportRows("ordered");
 
         return interaction.editReply({
-          content: `Exported ${rows.length} ordered customers.`,
-          files: [{ attachment: Buffer.from(csv, "utf-8"), name: "ordered_customers_export.csv" }],
+          content: `✅ Exported ${rows.length} ordered customer record(s).`,
+          files: [buildCustomerLeadCsvFile(rows, "ordered_customers_export.csv")],
         });
       }
 
