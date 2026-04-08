@@ -5663,20 +5663,6 @@ if (addResult?.error) {
         });
       }
 
-        return interaction.reply({
-          content: "Choose a member:",
-          components: [
-            new ActionRowBuilder().addComponents(
-              new StringSelectMenuBuilder()
-                .setCustomId(`staff_member_search_select:${action}`)
-                .setPlaceholder("Select a member…")
-                .addOptions(memberSelectOptions(matches))
-            ),
-          ],
-          flags: 64,
-        });
-      }
-
       if (customId.startsWith("staff_timeout_modal:")) {
         const [, userId] = customId.split(":");
         const targetMember = await ensureTargetMember(interaction.guild, userId);
