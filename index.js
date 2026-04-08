@@ -446,34 +446,86 @@ function truncateForField(value, max = 1024, fallback = "None") {
   return `${str.slice(0, Math.max(0, max - 3))}...`;
 }
 
-function getCustomerLeadBrowserPageSize() {
-  return typeof CUSTOMER_BROWSER_PAGE_SIZE === "number" && CUSTOMER_BROWSER_PAGE_SIZE > 0
-    ? CUSTOMER_BROWSER_PAGE_SIZE
-    : 10;
+function escapeCsvValue(value) {
+  if (value === null || value === undefined) return "";
+  const str = String(value);
+  if (str.includes('"') || str.includes(",") || str.includes("\n") || str.includes("\r")) {
+    return `"${str.replace(/"/g, '""')}"`;
+  }
+  return str;
 }
 
-function getCustomerLeadBrowserPageData(leads, page = 0) {
-  const pageSize = getCustomerLeadBrowserPageSize();
-  const totalPages = Math.max(1, Math.ceil(leads.length / pageSize));
-  const safePage = Math.max(0, Math.min(page, totalPages - 1));
-  const start = safePage * pageSize;
-  const pageLeads = leads.slice(start, start + pageSize);
+function formatCsvDate(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString();
+}
 
+function buildCustomerLeadCsv(rows) {
+  const headers = [
+    "discord_user_id",
+    "username",
+    "full_name",
+    "email",
+    "phone",
+    "full_shipping_info",
+    "country",
+    "first_order_date",
+    "last_order_date",
+    "total_orders",
+    "marketing_consent_status",
+    "marketing_consent_timestamp",
+    "marketing_consent_source",
+    "opt_out_status",
+    "updated_at",
+  ];
+
+  const lines = [headers.join(",")];
+
+  for (const row of rows) {
+    lines.push(
+      [
+        row.discord_user_id,
+        row.username,
+        row.full_name,
+        row.email,
+        row.phone,
+        row.full_shipping_info,
+        row.country,
+        formatCsvDate(row.first_order_date),
+        formatCsvDate(row.last_order_date),
+        Number(row.total_orders || 0),
+        row.marketing_consent_status === null || row.marketing_consent_status === undefined
+          ? ""
+          : row.marketing_consent_status,
+        formatCsvDate(row.marketing_consent_timestamp),
+        row.marketing_consent_source,
+        Boolean(row.opt_out_status),
+        formatCsvDate(row.updated_at),
+      ]
+        .map(escapeCsvValue)
+        .join(",")
+    );
+  }
+
+  return lines.join("\n");
+}
+
+function buildCustomerLeadCsvFile(rows, fileName) {
+  const csv = buildCustomerLeadCsv(rows);
   return {
-    totalPages,
-    safePage,
-    start,
-    pageLeads,
-    pageSize,
+    attachment: Buffer.from(csv, "utf8"),
+    name: fileName,
   };
 }
 
-function customerBrowserViewTitle(view) {
-  if (view === "consented") return "Customers / Leads — Marketing Yes";
-  if (view === "opted_out") return "Customers / Leads — Opted Out";
-  if (view === "ordered") return "Customers / Leads — Ordered";
-  if (view === "recent") return "Customers / Leads — Recent";
-  return "Customers / Leads — All";
+function customerExportPanelText() {
+  return (
+    `🟣 **Customers / Leads**\n\n` +
+    `Main workflow is now export based.\n` +
+    `Use CSV exports for lead lists and keep lookup for one off searches.`
+  );
 }
 
 /* -------------------------- MODERATION HELPERS -------------------------- */
@@ -744,7 +796,7 @@ function buildMemberDetailComponents(member, view, page = 0) {
 
 async function seedOrRepairCatalog() {
   for (const [categoryName, items] of Object.entries(SAFE_SEED_CATALOG)) {
-    let categoryRes = await pool.query(
+    const categoryRes = await pool.query(
       `SELECT category_id FROM categories WHERE category_name = $1 LIMIT 1`,
       [categoryName]
     );
@@ -976,6 +1028,71 @@ async function initDb() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS username TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS full_name TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS email TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS phone TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS full_shipping_info TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS country TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS first_order_date TIMESTAMPTZ;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS last_order_date TIMESTAMPTZ;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS total_orders INT NOT NULL DEFAULT 0;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS marketing_consent_status BOOLEAN;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS marketing_consent_timestamp TIMESTAMPTZ;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS marketing_consent_source TEXT;
+  `);
+
+  await pool.query(`
+    ALTER TABLE customer_leads
+    ADD COLUMN IF NOT EXISTS opt_out_status BOOLEAN NOT NULL DEFAULT FALSE;
   `);
 
   await pool.query(`
@@ -1520,7 +1637,7 @@ async function createProductRequestRecord(userId, username, requestedProduct, ex
   return res.rows[0];
 }
 
-/* ------------------------- CUSTOMER / LEADS HELPERS ---------------------- */
+/* ------------------------- CUSTOMER / LEADS HELPERS --------------------- */
 
 async function upsertCustomerLeadProfile({
   userId,
@@ -1820,22 +1937,15 @@ async function getRecentCustomerLeads(limit = 10) {
   return res.rows;
 }
 
-async function getCustomerLeadsForBrowser(view = "all", limit = 250) {
-  const safeLimit = Math.max(1, Math.min(500, Number(limit || 250)));
-
+async function getCustomerLeadExportRows(exportType = "all") {
   let whereSql = "";
-  if (view === "consented") {
+  if (exportType === "marketing_yes") {
     whereSql = `WHERE marketing_consent_status = TRUE`;
-  } else if (view === "opted_out") {
-    whereSql = `WHERE opt_out_status = TRUE OR marketing_consent_status = FALSE`;
-  } else if (view === "ordered") {
+  } else if (exportType === "ordered") {
     whereSql = `WHERE COALESCE(total_orders, 0) > 0`;
-  } else if (view === "recent") {
-    whereSql = "";
   }
 
-  const res = await pool.query(
-    `
+  const res = await pool.query(`
     SELECT
       discord_user_id,
       username,
@@ -1861,10 +1971,7 @@ async function getCustomerLeadsForBrowser(view = "all", limit = 250) {
       created_at DESC,
       total_orders DESC,
       full_name ASC NULLS LAST
-    LIMIT $1
-    `,
-    [safeLimit]
-  );
+  `);
 
   return res.rows;
 }
@@ -1994,138 +2101,6 @@ function buildCustomerLeadLookupEmbed(lead) {
       }
     )
     .setTimestamp(new Date(lead.updated_at || lead.created_at || Date.now()));
-}
-
-function buildRecentCustomerLeadsEmbed(leads) {
-  const description = leads.length
-    ? leads
-        .map((lead, index) => {
-          const displayName = leadDisplayName(lead);
-          const email = lead.email || "No email";
-          const phone = lead.phone || "No phone";
-          const consent = formatConsentValue(lead.marketing_consent_status);
-          const orders = Number(lead.total_orders || 0);
-          return (
-            `${index + 1}. **${truncate100(displayName)}**\n` +
-            `Email: ${truncate100(email)}\n` +
-            `Phone: ${truncate100(phone)}\n` +
-            `Consent: ${consent}\n` +
-            `Orders: ${orders}`
-          );
-        })
-        .join("\n\n")
-    : "_No customer or lead records found_";
-
-  return new EmbedBuilder()
-    .setTitle("Recent Customers / Leads")
-    .setDescription(description);
-}
-
-function buildCustomerLeadBrowserEmbed(leads, view = "all", page = 0) {
-  const { totalPages, safePage, start, pageLeads } = getCustomerLeadBrowserPageData(leads, page);
-
-  const description = pageLeads.length
-    ? pageLeads
-        .map((lead, index) => {
-          const position = start + index + 1;
-          const displayName = leadDisplayName(lead);
-          const email = lead.email || "No email";
-          const phone = lead.phone || "No phone";
-          const consent = formatConsentValue(lead.marketing_consent_status);
-          const orders = Number(lead.total_orders || 0);
-
-          return (
-            `${position}. **${truncate100(displayName)}**\n` +
-            `Email: ${truncate100(email)}\n` +
-            `Phone: ${truncate100(phone)}\n` +
-            `Consent: ${consent}\n` +
-            `Orders: ${orders}`
-          );
-        })
-        .join("\n\n")
-    : "_No customer or lead records found_";
-
-  return new EmbedBuilder()
-    .setTitle(customerBrowserViewTitle(view))
-    .setDescription(description)
-    .addFields(
-      { name: "Results", value: String(leads.length), inline: true },
-      { name: "Page", value: `${safePage + 1}/${totalPages}`, inline: true }
-    );
-}
-
-function buildCustomerLeadBrowserSelectMenu(leads, view = "all", page = 0) {
-  const { pageLeads } = getCustomerLeadBrowserPageData(leads, page);
-
-  if (!pageLeads.length) return null;
-
-  return new ActionRowBuilder().addComponents(
-    new StringSelectMenuBuilder()
-      .setCustomId(`staff_customer_browser_select:${view}:${page}`)
-      .setPlaceholder("Select a customer…")
-      .addOptions(
-        pageLeads.map((lead) => ({
-          label: truncate100(leadDisplayName(lead)),
-          description: truncate100(
-            `${lead.email || lead.phone || lead.discord_user_id || "No contact"} • Orders ${Number(lead.total_orders || 0)} • ${formatConsentValue(lead.marketing_consent_status)}`
-          ),
-          value: String(lead.discord_user_id),
-        }))
-      )
-  );
-}
-
-function buildCustomerLeadBrowserComponents(leads, view = "all", page = 0) {
-  const { totalPages, safePage } = getCustomerLeadBrowserPageData(leads, page);
-  const rows = [];
-
-  const selectRow = buildCustomerLeadBrowserSelectMenu(leads, view, safePage);
-  if (selectRow) rows.push(selectRow);
-
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`staff_customer_browser_prev:${view}:${safePage}`)
-        .setLabel("Previous")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(safePage <= 0),
-      new ButtonBuilder()
-        .setCustomId(`staff_customer_browser_next:${view}:${safePage}`)
-        .setLabel("Next")
-        .setStyle(ButtonStyle.Secondary)
-        .setDisabled(safePage >= totalPages - 1),
-      new ButtonBuilder()
-        .setCustomId(`staff_customer_browser_refresh:${view}:${safePage}`)
-        .setLabel("Refresh")
-        .setStyle(ButtonStyle.Primary)
-    )
-  );
-
-  rows.push(
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("staff_panel_home")
-        .setLabel("Back")
-        .setStyle(ButtonStyle.Secondary)
-    )
-  );
-
-  return rows;
-}
-
-function buildCustomerLeadDetailComponents(lead, view = "all", page = 0) {
-  return [
-    new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`staff_customer_browser_refresh:${view}:${page}`)
-        .setLabel("Back to List")
-        .setStyle(ButtonStyle.Secondary),
-      new ButtonBuilder()
-        .setCustomId("staff_lookup_customer")
-        .setLabel("Lookup")
-        .setStyle(ButtonStyle.Primary)
-    ),
-  ];
 }
 
 /* ------------------------------- CART HELPERS --------------------------- */
@@ -3328,17 +3303,27 @@ function staffOrdersPanel() {
 
 function staffCustomersPanel() {
   return {
-    content: `🟣 **Customers / Leads**`,
+    content: customerExportPanelText(),
     components: [
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_customer_browser_all").setLabel("View All").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_customer_browser_recent").setLabel("Recent").setStyle(ButtonStyle.Secondary),
-        new ButtonBuilder().setCustomId("staff_lookup_customer").setLabel("Lookup").setStyle(ButtonStyle.Secondary)
+        new ButtonBuilder()
+          .setCustomId("staff_export_all_leads_csv")
+          .setLabel("Export All Leads CSV")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("staff_export_marketing_yes_csv")
+          .setLabel("Export Marketing Yes CSV")
+          .setStyle(ButtonStyle.Success)
       ),
       new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("staff_customer_browser_ordered").setLabel("Ordered").setStyle(ButtonStyle.Primary),
-        new ButtonBuilder().setCustomId("staff_customer_browser_consented").setLabel("Marketing Yes").setStyle(ButtonStyle.Success),
-        new ButtonBuilder().setCustomId("staff_customer_browser_opted_out").setLabel("Opted Out").setStyle(ButtonStyle.Danger)
+        new ButtonBuilder()
+          .setCustomId("staff_export_ordered_customers_csv")
+          .setLabel("Export Ordered Customers CSV")
+          .setStyle(ButtonStyle.Primary),
+        new ButtonBuilder()
+          .setCustomId("staff_lookup_customer")
+          .setLabel("Lookup Customer")
+          .setStyle(ButtonStyle.Secondary)
       ),
       navRow(),
     ],
@@ -3594,7 +3579,7 @@ async function registerCommands() {
   await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
 }
 
-/* ------------------------------- DISCORD -------------------------------- */
+/* ----------------------------- DISCORD CORE ----------------------------- */
 
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
@@ -3748,6 +3733,8 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.showModal(productRequestModal());
       }
 
+      /* ----------------------- MARKETING CONSENT ------------------------ */
+
       if (customId === "marketing_consent_yes") {
         await updateCustomerLeadConsent(interaction.user.id, true, "shop_shipping_reply");
 
@@ -3757,8 +3744,7 @@ client.on("interactionCreate", async (interaction) => {
             "You can continue from your private shop channel below.",
           components: [
             ...interaction.message.components.filter(
-              (row) =>
-                row.components?.some((c) => c.style === ButtonStyle.Link)
+              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
             ),
           ],
         });
@@ -3773,8 +3759,7 @@ client.on("interactionCreate", async (interaction) => {
             "You can continue from your private shop channel below.",
           components: [
             ...interaction.message.components.filter(
-              (row) =>
-                row.components?.some((c) => c.style === ButtonStyle.Link)
+              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
             ),
           ],
         });
@@ -3787,45 +3772,10 @@ client.on("interactionCreate", async (interaction) => {
             "You can continue from your private shop channel below.",
           components: [
             ...interaction.message.components.filter(
-              (row) =>
-                row.components?.some((c) => c.style === ButtonStyle.Link)
+              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
             ),
           ],
         });
-      }
-
-      if (customId.startsWith("verify_approve:")) {
-        const [, targetUserId] = customId.split(":");
-
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        const guild = interaction.guild;
-        const member = await guild.members.fetch(targetUserId).catch(() => null);
-
-        if (!member) {
-          return interaction.reply({ content: "Could not find that user in the server.", flags: 64 });
-        }
-
-        if (member.roles.cache.has(VERIFIED_ROLE_ID)) {
-          return interaction.reply({ content: "That user is already verified.", flags: 64 });
-        }
-
-        await member.roles.add(VERIFIED_ROLE_ID, `Approved by ${interaction.user.tag}`);
-        clearMemberBrowserCache(guild.id);
-
-        await interaction.update({
-          content: `✅ Verified <@${targetUserId}> by <@${interaction.user.id}>`,
-          embeds: interaction.message.embeds,
-          components: [],
-        });
-
-        try {
-          await member.send(`✅ You have been verified in **${guild.name}** and should now have access to the full server.`);
-        } catch {}
-
-        return;
       }
 
       /* -------------------------- STAFF NAVIGATION ------------------------- */
@@ -3839,7 +3789,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (customId === "staff_nav_customers") {
-        return interaction.update(staffCustomersPanel());
+        return interaction.update(staffCustomersPanel()); // updated panel used
       }
 
       if (customId === "staff_nav_products") {
@@ -3862,422 +3812,63 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.update(staffModerationPanel());
       }
 
-      /* --------------------------- STAFF ACTIONS -------------------------- */
+      /* ---------------------- CUSTOMER EXPORT ACTIONS --------------------- */
 
-      if (customId === "staff_add_product") {
-        return interaction.update({
-          content: "Choose the category you want to add a product to:",
-          components: await staffCategorySelect("staff_add_product_select_category", "Choose a category…"),
-        });
-      }
-
-      if (customId === "staff_edit_product") {
-        return interaction.update({
-          content: "Choose the category containing the product you want to edit:",
-          components: await staffCategorySelect("staff_edit_product_select_category", "Choose a category…"),
-        });
-      }
-
-      if (customId === "staff_move_product") {
-        return interaction.update({
-          content: "Choose the category containing the product you want to move:",
-          components: await staffCategorySelect("staff_move_product_pick_category", "Choose a category…"),
-        });
-      }
-
-      if (customId === "staff_delete_product") {
-        return interaction.update({
-          content: "Choose the category containing the product you want to delete:",
-          components: await staffCategorySelect("staff_delete_product_pick_category", "Choose a category…"),
-        });
-      }
-
-      if (customId === "staff_add_category") {
-        return interaction.showModal(staffAddCategoryModal());
-      }
-
-      if (customId === "staff_rename_category") {
-        return interaction.update({
-          content: "Choose the category you want to rename:",
-          components: await staffCategorySelect("staff_rename_category_select", "Choose a category…"),
-        });
-      }
-
-      if (customId === "staff_delete_category") {
-        return interaction.update({
-          content: "Choose the category you want to delete:",
-          components: await staffCategorySelect("staff_delete_category_select", "Choose a category…"),
-        });
-      }
-
-      if (customId === "staff_adjust_stock") {
-        return interaction.update({
-          content: "Choose a category:",
-          components: await staffCategorySelect("staff_stock_select_category", "Choose a category…"),
-        });
-      }
-
-      if (customId === "staff_view_all_stock") {
+      if (customId === "staff_export_all_leads") {
         if (!isStaff(interaction.member)) {
           return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
         await interaction.deferReply({ flags: 64 });
 
-        const rows = await getAllProductsWithStockOverview();
-        const messages = buildStockOverviewMessages(rows);
+        const rows = await getAllCustomerLeadsForExport();
+        const csv = buildCustomerLeadsCsv(rows);
 
-        await interaction.editReply({
-          content: messages[0],
+        return interaction.editReply({
+          content: `Exported ${rows.length} leads.`,
+          files: [{ attachment: Buffer.from(csv, "utf-8"), name: "all_leads_export.csv" }],
         });
+      }
 
-        for (let i = 1; i < messages.length; i += 1) {
-          await interaction.followUp({
-            content: messages[i],
-            flags: 64,
-          });
+      if (customId === "staff_export_marketing_yes") {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
         }
 
-        return;
-      }
+        await interaction.deferReply({ flags: 64 });
 
-      if (customId === "staff_restock_all") {
-        return interaction.update({
-          content: "Are you sure you want to restock all items back to their default values?",
-          components: [
-            new ActionRowBuilder().addComponents(
-              new ButtonBuilder()
-                .setCustomId("staff_restock_all_execute")
-                .setLabel("Yes, restock all")
-                .setStyle(ButtonStyle.Danger)
-            ),
-            navRow(),
-          ],
+        const rows = await getMarketingYesLeadsForExport();
+        const csv = buildCustomerLeadsCsv(rows);
+
+        return interaction.editReply({
+          content: `Exported ${rows.length} marketing-consented users.`,
+          files: [{ attachment: Buffer.from(csv, "utf-8"), name: "marketing_yes_export.csv" }],
         });
       }
 
-      if (customId === "staff_create_discount") {
-        return interaction.showModal(staffCreateDiscountModal());
-      }
+      if (customId === "staff_export_ordered") {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
 
-      if (customId === "staff_toggle_discount") {
-        return interaction.showModal(staffToggleDiscountModal());
-      }
+        await interaction.deferReply({ flags: 64 });
 
-      if (customId === "staff_lookup_order") {
-        return interaction.showModal(staffOrderLookupModal());
+        const rows = await getOrderedCustomersForExport();
+        const csv = buildCustomerLeadsCsv(rows);
+
+        return interaction.editReply({
+          content: `Exported ${rows.length} ordered customers.`,
+          files: [{ attachment: Buffer.from(csv, "utf-8"), name: "ordered_customers_export.csv" }],
+        });
       }
 
       if (customId === "staff_lookup_customer") {
         return interaction.showModal(staffCustomerLookupModal());
       }
 
-      if (
-        customId === "staff_customer_browser_all" ||
-        customId === "staff_customer_browser_recent" ||
-        customId === "staff_customer_browser_ordered" ||
-        customId === "staff_customer_browser_consented" ||
-        customId === "staff_customer_browser_opted_out"
-      ) {
-        await interaction.deferUpdate();
+      /* -------------------------- SHOP BUTTONS --------------------------- */
 
-        const view =
-          customId === "staff_customer_browser_recent"
-            ? "recent"
-            : customId === "staff_customer_browser_ordered"
-              ? "ordered"
-              : customId === "staff_customer_browser_consented"
-                ? "consented"
-                : customId === "staff_customer_browser_opted_out"
-                  ? "opted_out"
-                  : "all";
-
-        const leads = await getCustomerLeadsForBrowser(view);
-
-        await interaction.message.edit({
-          content: `Browsing ${customerBrowserViewTitle(view).toLowerCase()}:`,
-          embeds: [buildCustomerLeadBrowserEmbed(leads, view, 0)],
-          components: buildCustomerLeadBrowserComponents(leads, view, 0),
-        });
-
-        return;
-      }
-
-      if (customId === "staff_recent_customers") {
-        const leads = await getRecentCustomerLeads(10);
-
-        return interaction.update({
-          content: "Recent customers / leads:",
-          embeds: [buildRecentCustomerLeadsEmbed(leads)],
-          components: [navRow()],
-        });
-      }
-
-      if (customId === "staff_add_verified") {
-        return interaction.showModal(staffMemberSearchModal("add_verified", "Add Verified Role"));
-      }
-
-      if (customId === "staff_remove_verified") {
-        return interaction.showModal(staffMemberSearchModal("remove_verified", "Remove Verified Role"));
-      }
-
-      if (customId === "staff_timeout") {
-        return interaction.showModal(staffMemberSearchModal("timeout", "Find Member To Timeout"));
-      }
-
-      if (customId === "staff_kick") {
-        return interaction.showModal(staffMemberSearchModal("kick", "Find Member To Kick"));
-      }
-
-      if (customId === "staff_ban") {
-        return interaction.showModal(staffMemberSearchModal("ban", "Find Member To Ban"));
-      }
-
-      if (
-        customId === "staff_browse_all_members" ||
-        customId === "staff_browse_verified_members" ||
-        customId === "staff_browse_unverified_members"
-      ) {
-        await interaction.deferUpdate();
-
-        const view =
-          customId === "staff_browse_verified_members"
-            ? "verified"
-            : customId === "staff_browse_unverified_members"
-              ? "unverified"
-              : "all";
-
-        const members = await getFilteredGuildMembers(interaction.guild, view);
-
-        await interaction.message.edit({
-          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-          embeds: [buildMemberBrowserEmbed(members, view, 0)],
-          components: buildMemberBrowserComponents(members, view, 0),
-        });
-
-        return;
-      }
-
-      if (
-        customId.startsWith("staff_member_browser_prev:") ||
-        customId.startsWith("staff_member_browser_next:") ||
-        customId.startsWith("staff_member_browser_refresh:")
-      ) {
-        await interaction.deferUpdate();
-
-        const [view, pageRaw] = customId.split(":").slice(1);
-        const currentPage = parseInt(pageRaw, 10) || 0;
-        let newPage = currentPage;
-
-        if (customId.startsWith("staff_member_browser_prev:")) {
-          newPage = Math.max(0, currentPage - 1);
-        }
-
-        if (customId.startsWith("staff_member_browser_next:")) {
-          const membersForCount = await getFilteredGuildMembers(interaction.guild, view);
-          const totalPages = Math.max(1, Math.ceil(membersForCount.length / MEMBER_BROWSER_PAGE_SIZE));
-          newPage = Math.min(totalPages - 1, currentPage + 1);
-
-          await interaction.message.edit({
-            content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-            embeds: [buildMemberBrowserEmbed(membersForCount, view, newPage)],
-            components: buildMemberBrowserComponents(membersForCount, view, newPage),
-          });
-
-          return;
-        }
-
-        const members = await getFilteredGuildMembers(
-          interaction.guild,
-          view,
-          customId.startsWith("staff_member_browser_refresh:")
-        );
-
-        await interaction.message.edit({
-          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
-          embeds: [buildMemberBrowserEmbed(members, view, newPage)],
-          components: buildMemberBrowserComponents(members, view, newPage),
-        });
-
-        return;
-      }
-
-      if (
-        customId.startsWith("staff_customer_browser_prev:") ||
-        customId.startsWith("staff_customer_browser_next:") ||
-        customId.startsWith("staff_customer_browser_refresh:")
-      ) {
-        await interaction.deferUpdate();
-
-        const [view, pageRaw] = customId.split(":").slice(1);
-        const currentPage = parseInt(pageRaw, 10) || 0;
-        const leads = await getCustomerLeadsForBrowser(view);
-
-        const { totalPages } = getCustomerLeadBrowserPageData(leads, currentPage);
-        let newPage = currentPage;
-
-        if (customId.startsWith("staff_customer_browser_prev:")) {
-          newPage = Math.max(0, currentPage - 1);
-        }
-
-        if (customId.startsWith("staff_customer_browser_next:")) {
-          newPage = Math.min(totalPages - 1, currentPage + 1);
-        }
-
-        await interaction.message.edit({
-          content: `Browsing ${customerBrowserViewTitle(view).toLowerCase()}:`,
-          embeds: [buildCustomerLeadBrowserEmbed(leads, view, newPage)],
-          components: buildCustomerLeadBrowserComponents(leads, view, newPage),
-        });
-
-        return;
-      }
-
-      if (customId.startsWith("staff_member_apply_verify:")) {
-        await interaction.deferUpdate();
-
-        const [, view, pageRaw, targetUserId] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
-        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-        if (!targetMember) {
-          await interaction.message.edit({
-            content: "Could not find that member.",
-            embeds: [],
-            components: staffModerationPanel().components,
-          });
-          return;
-        }
-
-        const check = canActOnTarget(interaction.member, targetMember);
-        if (!check.ok) {
-          await interaction.message.edit({
-            content: check.reason,
-            embeds: [],
-            components: staffModerationPanel().components,
-          });
-          return;
-        }
-
-        if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-          await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
-          clearMemberBrowserCache(interaction.guild.id);
-        }
-
-        const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-        await interaction.message.edit({
-          content: `✅ Verified <@${targetUserId}>`,
-          embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
-          components: buildMemberDetailComponents(refreshedMember, view, page),
-        });
-
-        return;
-      }
-
-      if (customId.startsWith("staff_member_apply_unverify:")) {
-        await interaction.deferUpdate();
-
-        const [, view, pageRaw, targetUserId] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
-        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-        if (!targetMember) {
-          await interaction.message.edit({
-            content: "Could not find that member.",
-            embeds: [],
-            components: staffModerationPanel().components,
-          });
-          return;
-        }
-
-        const check = canActOnTarget(interaction.member, targetMember);
-        if (!check.ok) {
-          await interaction.message.edit({
-            content: check.reason,
-            embeds: [],
-            components: staffModerationPanel().components,
-          });
-          return;
-        }
-
-        if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
-          await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
-          clearMemberBrowserCache(interaction.guild.id);
-        }
-
-        const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
-
-        await interaction.message.edit({
-          content: `✅ Removed verified role from <@${targetUserId}>`,
-          embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
-          components: buildMemberDetailComponents(refreshedMember, view, page),
-        });
-
-        return;
-      }
-
-      if (customId === "staff_restock_all_execute") {
-        await restockAllToDefault();
-
-        return interaction.update({
-          content: "✅ All stock reset to default values.",
-          components: staffStockPanel().components,
-        });
-      }
-
-      if (customId.startsWith("staff_open_rename_product_modal:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_price_modal:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
-      }
-
-      if (customId.startsWith("staff_open_stock_modal_direct:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
-      }
-
-      if (customId.startsWith("staff_open_move_product_flow:")) {
-        const [, sku] = customId.split(":");
-        const product = await getProductBySku(sku);
-        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content: `Choose the new category for **${product.product_name}** (${sku}):`,
-          components: await staffCategorySelect(
-            `staff_move_product_select_category:${sku}`,
-            "Choose a new category…"
-          ),
-        });
-      }
-
-      if (customId.startsWith("staff_delete_product_confirm:")) {
-        const [, sku] = customId.split(":");
-        const deleted = await deleteProduct(sku);
-        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
-
-        return interaction.update({
-          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
-          components: staffProductsPanel().components,
-        });
-      }
-
-      /* ---------------------------- SHOP BUTTONS --------------------------- */
-
-      if (customId === "browse_categories") {
+            if (customId === "browse_categories") {
         return showCategoriesInSession(interaction, "Choose a category:");
       }
 
@@ -4513,7 +4104,7 @@ client.on("interactionCreate", async (interaction) => {
           const orderId = orderRes.rows[0].order_id;
           const orderCreatedAt = orderRes.rows[0].created_at || new Date();
 
-                  for (const it of cart.items) {
+          for (const it of cart.items) {
             await pool.query(
               `
               INSERT INTO order_items (order_id, sku, name, size, color, qty, price_pence)
@@ -4610,6 +4201,414 @@ client.on("interactionCreate", async (interaction) => {
         } finally {
           clearSubmitLock(interaction.user.id);
         }
+      }
+
+      /* ------------------------ VERIFICATION ACTIONS ---------------------- */
+
+      if (customId.startsWith("verify_approve:")) {
+        const [, targetUserId] = customId.split(":");
+
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        const guild = interaction.guild;
+        const member = await guild.members.fetch(targetUserId).catch(() => null);
+
+        if (!member) {
+          return interaction.reply({ content: "Could not find that user in the server.", flags: 64 });
+        }
+
+        if (member.roles.cache.has(VERIFIED_ROLE_ID)) {
+          return interaction.reply({ content: "That user is already verified.", flags: 64 });
+        }
+
+        await member.roles.add(VERIFIED_ROLE_ID, `Approved by ${interaction.user.tag}`);
+        clearMemberBrowserCache(guild.id);
+
+        await interaction.update({
+          content: `✅ Verified <@${targetUserId}> by <@${interaction.user.id}>`,
+          embeds: interaction.message.embeds,
+          components: [],
+        });
+
+        try {
+          await member.send(
+            `✅ You have been verified in **${guild.name}** and should now have access to the full server.`
+          );
+        } catch {}
+
+        return;
+      }
+
+      /* --------------------------- STAFF ACTIONS -------------------------- */
+
+      if (customId === "staff_add_product") {
+        return interaction.update({
+          content: "Choose the category you want to add a product to:",
+          components: await staffCategorySelect("staff_add_product_select_category", "Choose a category…"),
+        });
+      }
+
+      if (customId === "staff_edit_product") {
+        return interaction.update({
+          content: "Choose the category containing the product you want to edit:",
+          components: await staffCategorySelect("staff_edit_product_select_category", "Choose a category…"),
+        });
+      }
+
+      if (customId === "staff_move_product") {
+        return interaction.update({
+          content: "Choose the category containing the product you want to move:",
+          components: await staffCategorySelect("staff_move_product_pick_category", "Choose a category…"),
+        });
+      }
+
+      if (customId === "staff_delete_product") {
+        return interaction.update({
+          content: "Choose the category containing the product you want to delete:",
+          components: await staffCategorySelect("staff_delete_product_pick_category", "Choose a category…"),
+        });
+      }
+
+      if (customId === "staff_add_category") {
+        return interaction.showModal(staffAddCategoryModal());
+      }
+
+      if (customId === "staff_rename_category") {
+        return interaction.update({
+          content: "Choose the category you want to rename:",
+          components: await staffCategorySelect("staff_rename_category_select", "Choose a category…"),
+        });
+      }
+
+      if (customId === "staff_delete_category") {
+        return interaction.update({
+          content: "Choose the category you want to delete:",
+          components: await staffCategorySelect("staff_delete_category_select", "Choose a category…"),
+        });
+      }
+
+      if (customId === "staff_adjust_stock") {
+        return interaction.update({
+          content: "Choose a category:",
+          components: await staffCategorySelect("staff_stock_select_category", "Choose a category…"),
+        });
+      }
+
+      if (customId === "staff_view_all_stock") {
+        if (!isStaff(interaction.member)) {
+          return interaction.reply({ content: "Staff only.", flags: 64 });
+        }
+
+        await interaction.deferReply({ flags: 64 });
+
+        const rows = await getAllProductsWithStockOverview();
+        const messages = buildStockOverviewMessages(rows);
+
+        await interaction.editReply({
+          content: messages[0],
+        });
+
+        for (let i = 1; i < messages.length; i += 1) {
+          await interaction.followUp({
+            content: messages[i],
+            flags: 64,
+          });
+        }
+
+        return;
+      }
+
+      if (customId === "staff_restock_all") {
+        return interaction.update({
+          content: "Are you sure you want to restock all items back to their default values?",
+          components: [
+            new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId("staff_restock_all_execute")
+                .setLabel("Yes, restock all")
+                .setStyle(ButtonStyle.Danger)
+            ),
+            navRow(),
+          ],
+        });
+      }
+
+      if (customId === "staff_create_discount") {
+        return interaction.showModal(staffCreateDiscountModal());
+      }
+
+      if (customId === "staff_toggle_discount") {
+        return interaction.showModal(staffToggleDiscountModal());
+      }
+
+      if (customId === "staff_lookup_order") {
+        return interaction.showModal(staffOrderLookupModal());
+      }
+
+      if (customId === "staff_recent_customers") {
+        const leads = await getRecentCustomerLeads(10);
+
+        const description = leads.length
+          ? leads
+              .map((lead, index) => {
+                const displayName = leadDisplayName(lead);
+                const email = lead.email || "No email";
+                const phone = lead.phone || "No phone";
+                const consent = formatConsentValue(lead.marketing_consent_status);
+                const orders = Number(lead.total_orders || 0);
+                return (
+                  `${index + 1}. **${truncate100(displayName)}**\n` +
+                  `Email: ${truncate100(email)}\n` +
+                  `Phone: ${truncate100(phone)}\n` +
+                  `Consent: ${consent}\n` +
+                  `Orders: ${orders}`
+                );
+              })
+              .join("\n\n")
+          : "_No customer or lead records found_";
+
+        return interaction.update({
+          content: "Recent customers / leads:",
+          embeds: [
+            new EmbedBuilder()
+              .setTitle("Recent Customers / Leads")
+              .setDescription(description),
+          ],
+          components: [navRow()],
+        });
+      }
+
+      if (customId === "staff_add_verified") {
+        return interaction.showModal(staffMemberSearchModal("add_verified", "Add Verified Role"));
+      }
+
+      if (customId === "staff_remove_verified") {
+        return interaction.showModal(staffMemberSearchModal("remove_verified", "Remove Verified Role"));
+      }
+
+      if (customId === "staff_timeout") {
+        return interaction.showModal(staffMemberSearchModal("timeout", "Find Member To Timeout"));
+      }
+
+      if (customId === "staff_kick") {
+        return interaction.showModal(staffMemberSearchModal("kick", "Find Member To Kick"));
+      }
+
+      if (customId === "staff_ban") {
+        return interaction.showModal(staffMemberSearchModal("ban", "Find Member To Ban"));
+      }
+
+      if (
+        customId === "staff_browse_all_members" ||
+        customId === "staff_browse_verified_members" ||
+        customId === "staff_browse_unverified_members"
+      ) {
+        await interaction.deferUpdate();
+
+        const view =
+          customId === "staff_browse_verified_members"
+            ? "verified"
+            : customId === "staff_browse_unverified_members"
+              ? "unverified"
+              : "all";
+
+        const members = await getFilteredGuildMembers(interaction.guild, view);
+
+        await interaction.message.edit({
+          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+          embeds: [buildMemberBrowserEmbed(members, view, 0)],
+          components: buildMemberBrowserComponents(members, view, 0),
+        });
+
+        return;
+      }
+
+      if (
+        customId.startsWith("staff_member_browser_prev:") ||
+        customId.startsWith("staff_member_browser_next:") ||
+        customId.startsWith("staff_member_browser_refresh:")
+      ) {
+        await interaction.deferUpdate();
+
+        const [view, pageRaw] = customId.split(":").slice(1);
+        const currentPage = parseInt(pageRaw, 10) || 0;
+        let newPage = currentPage;
+
+        if (customId.startsWith("staff_member_browser_prev:")) {
+          newPage = Math.max(0, currentPage - 1);
+        }
+
+        if (customId.startsWith("staff_member_browser_next:")) {
+          const membersForCount = await getFilteredGuildMembers(interaction.guild, view);
+          const totalPages = Math.max(1, Math.ceil(membersForCount.length / MEMBER_BROWSER_PAGE_SIZE));
+          newPage = Math.min(totalPages - 1, currentPage + 1);
+
+          await interaction.message.edit({
+            content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+            embeds: [buildMemberBrowserEmbed(membersForCount, view, newPage)],
+            components: buildMemberBrowserComponents(membersForCount, view, newPage),
+          });
+
+          return;
+        }
+
+        const members = await getFilteredGuildMembers(
+          interaction.guild,
+          view,
+          customId.startsWith("staff_member_browser_refresh:")
+        );
+
+        await interaction.message.edit({
+          content: `Browsing ${memberBrowserTitle(view).toLowerCase()}:`,
+          embeds: [buildMemberBrowserEmbed(members, view, newPage)],
+          components: buildMemberBrowserComponents(members, view, newPage),
+        });
+
+        return;
+      }
+
+      if (customId.startsWith("staff_member_apply_verify:")) {
+        await interaction.deferUpdate();
+
+        const [, view, pageRaw, targetUserId] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+        if (!targetMember) {
+          await interaction.message.edit({
+            content: "Could not find that member.",
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
+
+        const check = canActOnTarget(interaction.member, targetMember);
+        if (!check.ok) {
+          await interaction.message.edit({
+            content: check.reason,
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
+
+        if (!targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+          await targetMember.roles.add(VERIFIED_ROLE_ID, `Added by ${interaction.user.tag}`);
+          clearMemberBrowserCache(interaction.guild.id);
+        }
+
+        const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+        await interaction.message.edit({
+          content: `✅ Verified <@${targetUserId}>`,
+          embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
+          components: buildMemberDetailComponents(refreshedMember, view, page),
+        });
+
+        return;
+      }
+
+      if (customId.startsWith("staff_member_apply_unverify:")) {
+        await interaction.deferUpdate();
+
+        const [, view, pageRaw, targetUserId] = customId.split(":");
+        const page = parseInt(pageRaw, 10) || 0;
+        const targetMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+        if (!targetMember) {
+          await interaction.message.edit({
+            content: "Could not find that member.",
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
+
+        const check = canActOnTarget(interaction.member, targetMember);
+        if (!check.ok) {
+          await interaction.message.edit({
+            content: check.reason,
+            embeds: [],
+            components: staffModerationPanel().components,
+          });
+          return;
+        }
+
+        if (targetMember.roles.cache.has(VERIFIED_ROLE_ID)) {
+          await targetMember.roles.remove(VERIFIED_ROLE_ID, `Removed by ${interaction.user.tag}`);
+          clearMemberBrowserCache(interaction.guild.id);
+        }
+
+        const refreshedMember = await ensureTargetMember(interaction.guild, targetUserId);
+
+        await interaction.message.edit({
+          content: `✅ Removed verified role from <@${targetUserId}>`,
+          embeds: [buildMemberDetailEmbed(refreshedMember, view, page)],
+          components: buildMemberDetailComponents(refreshedMember, view, page),
+        });
+
+        return;
+      }
+
+      if (customId === "staff_restock_all_execute") {
+        await restockAllToDefault();
+
+        return interaction.update({
+          content: "✅ All stock reset to default values.",
+          components: staffStockPanel().components,
+        });
+      }
+
+      if (customId.startsWith("staff_open_rename_product_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffRenameProductModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_price_modal:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffEditPriceModal(sku, product.price_pence));
+      }
+
+      if (customId.startsWith("staff_open_stock_modal_direct:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.showModal(staffStockQtyModal(sku, product.product_name));
+      }
+
+      if (customId.startsWith("staff_open_move_product_flow:")) {
+        const [, sku] = customId.split(":");
+        const product = await getProductBySku(sku);
+        if (!product) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `Choose the new category for **${product.product_name}** (${sku}):`,
+          components: await staffCategorySelect(
+            `staff_move_product_select_category:${sku}`,
+            "Choose a new category…"
+          ),
+        });
+      }
+
+      if (customId.startsWith("staff_delete_product_confirm:")) {
+        const [, sku] = customId.split(":");
+        const deleted = await deleteProduct(sku);
+        if (!deleted) return interaction.reply({ content: "Product not found.", flags: 64 });
+
+        return interaction.update({
+          content: `✅ Deleted product **${deleted.product_name}** (${deleted.sku})`,
+          components: staffProductsPanel().components,
+        });
       }
 
       /* ---------------------------- ORDER ACTIONS ------------------------- */
@@ -4797,32 +4796,6 @@ client.on("interactionCreate", async (interaction) => {
           content: `Viewing member from ${memberBrowserTitle(view).toLowerCase()}:`,
           embeds: [buildMemberDetailEmbed(targetMember, view, page)],
           components: buildMemberDetailComponents(targetMember, view, page),
-        });
-
-        return;
-      }
-
-      if (customId.startsWith("staff_customer_browser_select:")) {
-        await interaction.deferUpdate();
-
-        const [, view, pageRaw] = customId.split(":");
-        const page = parseInt(pageRaw, 10) || 0;
-        const targetUserId = interaction.values[0];
-        const lead = await getCustomerLeadByUserId(targetUserId);
-
-        if (!lead) {
-          await interaction.message.edit({
-            content: "Could not find that customer or lead.",
-            embeds: [],
-            components: staffCustomersPanel().components,
-          });
-          return;
-        }
-
-        await interaction.message.edit({
-          content: `Viewing customer from ${customerBrowserViewTitle(view).toLowerCase()}:`,
-          embeds: [buildCustomerLeadLookupEmbed(lead)],
-          components: buildCustomerLeadDetailComponents(lead, view, page),
         });
 
         return;
