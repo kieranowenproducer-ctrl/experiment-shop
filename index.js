@@ -247,9 +247,11 @@ function parsePriceToPence(input) {
 }
 
 function calculateDiscountedTotals(subtotal, shipping, discountPercent) {
+  const safeSubtotal = Number(subtotal || 0);
+  const safeShipping = Number(shipping || 0);
   const safePercent = Math.max(0, Math.min(100, Number(discountPercent || 0)));
-  const discountAmount = Math.round(Number(subtotal || 0) * (safePercent / 100));
-  const total = Number(subtotal || 0) - discountAmount + Number(shipping || 0);
+  const discountAmount = Math.round(safeSubtotal * (safePercent / 100));
+  const total = safeSubtotal - discountAmount + safeShipping;
 
   return {
     discountPercent: safePercent,
@@ -506,6 +508,31 @@ function customerExportPanelText() {
     `Customer details from the shipping form are stored for admin and record keeping.\n` +
     `Use CSV exports for customer lists and use lookup for one off searches.`
   );
+}
+
+async function safeDeferUpdate(interaction) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferUpdate();
+  }
+}
+
+async function safeDeferReply(interaction, options = { flags: 64 }) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply(options);
+  }
+}
+
+async function safeReply(interaction, payload) {
+  if (interaction.deferred) return interaction.editReply(payload);
+  if (interaction.replied) return interaction.followUp(payload);
+  return interaction.reply(payload);
+}
+
+async function safeUpdate(interaction, payload) {
+  if (interaction.deferred || interaction.replied) {
+    return interaction.editReply(payload);
+  }
+  return interaction.update(payload);
 }
 
 /* -------------------------- MODERATION HELPERS -------------------------- */
@@ -1512,10 +1539,10 @@ async function hasUserUsedDiscountCode(userId, code) {
   return res.rows.length > 0;
 }
 
-async function recordDiscountCodeUse(userId, code, orderId) {
+async function recordDiscountCodeUse(clientConn, userId, code, orderId) {
   const normalized = normalizeDiscountCode(code);
 
-  await pool.query(
+  await clientConn.query(
     `
     INSERT INTO discount_code_uses (code, user_id, order_id, used_at)
     VALUES ($1, $2, $3, NOW())
@@ -1650,16 +1677,19 @@ async function upsertCustomerLeadProfile({
   );
 }
 
-async function recordCustomerLeadOrder({
-  userId,
-  username,
-  fullName,
-  email,
-  phone,
-  fullAddress,
-  country,
-  orderCreatedAt = new Date(),
-}) {
+async function recordCustomerLeadOrder(
+  clientConn,
+  {
+    userId,
+    username,
+    fullName,
+    email,
+    phone,
+    fullAddress,
+    country,
+    orderCreatedAt = new Date(),
+  }
+) {
   const cleanUserId = String(userId || "").trim();
   if (!cleanUserId) {
     throw new Error("User ID is required for customer lead order recording.");
@@ -1680,7 +1710,7 @@ async function recordCustomerLeadOrder({
     country: cleanCountry,
   });
 
-  await pool.query(
+  await clientConn.query(
     `
     INSERT INTO customer_leads (
       discord_user_id,
@@ -1816,7 +1846,7 @@ async function getCustomerLeadExportRows(exportType = "all") {
 }
 
 async function findCustomerLeadByLookupValue(lookupValue) {
-  const needle = String(lookupValue || "").trim();
+  const needle = String(lookupValue || "").trim().replace(/^@/, "");
   if (!needle) return null;
 
   const exactRes = await pool.query(
@@ -1916,8 +1946,8 @@ function buildCustomerLeadLookupEmbed(lead) {
 
 /* ------------------------------- CART HELPERS --------------------------- */
 
-async function getStockForSku(sku) {
-  const res = await pool.query(`SELECT stock_qty FROM stock_items WHERE sku = $1`, [sku]);
+async function getStockForSku(sku, clientConn = pool) {
+  const res = await clientConn.query(`SELECT stock_qty FROM stock_items WHERE sku = $1`, [sku]);
   if (!res.rows.length) return 0;
   return Number(res.rows[0].stock_qty || 0);
 }
@@ -1996,7 +2026,13 @@ async function getCartSummary(userId) {
     [userId]
   );
 
-  if (!cart.rows.length) return { items: [], subtotal_pence: 0 };
+  if (!cart.rows.length) {
+    return {
+      cart_id: null,
+      items: [],
+      subtotal_pence: 0,
+    };
+  }
 
   const cartId = cart.rows[0].cart_id;
   const itemsRes = await pool.query(
@@ -2010,9 +2046,9 @@ async function getCartSummary(userId) {
   );
 
   const items = itemsRes.rows;
-  const subtotal_pence = items.reduce((sum, it) => sum + it.qty * it.price_pence, 0);
+  const subtotal_pence = items.reduce((sum, it) => sum + Number(it.qty || 0) * Number(it.price_pence || 0), 0);
 
-  return { items, subtotal_pence };
+  return { cart_id: cartId, items, subtotal_pence };
 }
 
 async function upsertProfile(
@@ -2146,27 +2182,18 @@ async function clearCartDiscount(userId) {
   );
 }
 
-async function hasUserPendingOrder(userId) {
-  const guild = await client.guilds.fetch(GUILD_ID).catch(() => null);
-  if (guild) {
-    const member = await guild.members.fetch(userId).catch(() => null);
-    if (member?.roles?.cache?.has(STAFF_ROLE_ID)) {
-      return false;
+async function validateCartItemsAgainstLiveStock(items, clientConn = pool) {
+  for (const it of items) {
+    const stockQty = await getStockForSku(it.sku, clientConn);
+    if (Number(it.qty || 0) > stockQty) {
+      return {
+        ok: false,
+        message: `Only ${stockQty} left in stock for ${it.name}. Please update your basket and try again.`,
+      };
     }
   }
 
-  const res = await pool.query(
-    `
-    SELECT 1
-    FROM orders
-    WHERE user_id = $1
-      AND status IN ('pending', 'paid')
-    LIMIT 1
-    `,
-    [userId]
-  );
-
-  return res.rows.length > 0;
+  return { ok: true };
 }
 
 async function buildCartMessage(userId, heading = "✅ **Added to basket.**") {
@@ -2301,9 +2328,9 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Success)
         .setDisabled(
           status === "paid" ||
-            status === "dispatched" ||
-            status === "cancelled" ||
-            status === "completed"
+          status === "dispatched" ||
+          status === "cancelled" ||
+          status === "completed"
         ),
       new ButtonBuilder()
         .setCustomId(`staff_mark_dispatched:${orderId}`)
@@ -2311,8 +2338,8 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Primary)
         .setDisabled(
           status === "dispatched" ||
-            status === "cancelled" ||
-            status === "completed"
+          status === "cancelled" ||
+          status === "completed"
         ),
       new ButtonBuilder()
         .setCustomId(`staff_complete_order:${orderId}`)
@@ -2320,8 +2347,8 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Secondary)
         .setDisabled(
           status === "cancelled" ||
-            status === "completed" ||
-            status !== "dispatched"
+          status === "completed" ||
+          status !== "dispatched"
         )
     ),
     new ActionRowBuilder().addComponents(
@@ -2331,8 +2358,8 @@ function staffReceiptControls(orderId, status = "pending") {
         .setStyle(ButtonStyle.Danger)
         .setDisabled(
           status === "dispatched" ||
-            status === "cancelled" ||
-            status === "completed"
+          status === "cancelled" ||
+          status === "completed"
         )
     ),
   ];
@@ -3318,7 +3345,7 @@ async function createOrGetShopSessionChannel(guild, user) {
 async function sendOrEditCartUiMessage(interaction, payload, options = {}) {
   const { keepReply = false } = options;
 
-  await interaction.deferReply({ flags: 64 });
+  await safeDeferReply(interaction, { flags: 64 });
 
   const targetChannel = await createOrGetShopSessionChannel(interaction.guild, interaction.user);
   const existing = await getTrackedCartUiMessage(interaction.user.id, targetChannel);
@@ -3374,6 +3401,292 @@ async function showCartInSession(interaction, heading = "🛒 **Your basket**") 
     content,
     components: cartActionsComponents(),
   });
+}
+
+async function prepareOrderSubmission(userId) {
+  const shippingProfile = await getUserShippingProfile(userId);
+  if (!shippingProfile) {
+    return { ok: false, reason: "missing_shipping" };
+  }
+
+  const cart = await getCartSummary(userId);
+  if (!cart.items.length) {
+    return { ok: false, reason: "empty_cart" };
+  }
+
+  const stockValidation = await validateCartItemsAgainstLiveStock(cart.items);
+  if (!stockValidation.ok) {
+    return { ok: false, reason: "stock_failed", message: stockValidation.message };
+  }
+
+  let discount = await getCartDiscount(userId);
+
+  if (discount.discount_code) {
+    const validation = await validateDiscountCodeForUser(userId, discount.discount_code);
+
+    if (!validation.valid) {
+      await clearCartDiscount(userId);
+      return {
+        ok: false,
+        reason: "discount_failed",
+        message: `${validation.reason} The code has been removed from this basket. Please review your cart and submit again.`,
+      };
+    }
+
+    if (Number(discount.discount_percent || 0) !== Number(validation.discount_percent || 0)) {
+      await setCartDiscount(userId, validation.code, validation.discount_percent);
+      discount = await getCartDiscount(userId);
+    }
+  }
+
+  const shipping = getShippingPenceForCountry(shippingProfile.country);
+  const subtotal = cart.subtotal_pence;
+  const totals = calculateDiscountedTotals(subtotal, shipping, discount.discount_percent);
+
+  return {
+    ok: true,
+    cart,
+    shippingProfile,
+    discount,
+    subtotal,
+    shipping,
+    totals,
+    total: totals.total,
+  };
+}
+
+async function createOrderTransaction({
+  guild,
+  user,
+  prepared,
+}) {
+  const dbClient = await pool.connect();
+
+  try {
+    await dbClient.query("BEGIN");
+
+    const lockedCartRes = await dbClient.query(
+      `
+      SELECT cart_id, discount_code, discount_percent
+      FROM carts
+      WHERE user_id = $1 AND status = 'open'
+      FOR UPDATE
+      `,
+      [user.id]
+    );
+
+    if (!lockedCartRes.rows.length) {
+      throw new Error("Your cart could not be found. Please try again.");
+    }
+
+    const cartId = lockedCartRes.rows[0].cart_id;
+
+    const cartItemsRes = await dbClient.query(
+      `
+      SELECT sku, name, size, color, qty, price_pence
+      FROM cart_items
+      WHERE cart_id = $1
+      ORDER BY id ASC
+      `,
+      [cartId]
+    );
+
+    const liveItems = cartItemsRes.rows;
+    if (!liveItems.length) {
+      throw new Error("Your cart is empty.");
+    }
+
+    const liveShippingProfile = await getUserShippingProfile(user.id);
+    if (!liveShippingProfile) {
+      throw new Error("Shipping profile not found.");
+    }
+
+    const stockValidation = await validateCartItemsAgainstLiveStock(liveItems, dbClient);
+    if (!stockValidation.ok) {
+      throw new Error(stockValidation.message);
+    }
+
+    let liveDiscountCode = lockedCartRes.rows[0].discount_code || null;
+    let liveDiscountPercent = Number(lockedCartRes.rows[0].discount_percent || 0);
+
+    if (liveDiscountCode) {
+      const validation = await validateDiscountCodeForUser(user.id, liveDiscountCode);
+      if (!validation.valid) {
+        await dbClient.query(
+          `
+          UPDATE carts
+          SET discount_code = NULL,
+              discount_percent = 0,
+              updated_at = NOW()
+          WHERE cart_id = $1
+          `,
+          [cartId]
+        );
+        throw new Error(`${validation.reason} The code has been removed from this basket. Please review your cart and submit again.`);
+      }
+
+      liveDiscountCode = validation.code;
+      liveDiscountPercent = Number(validation.discount_percent || 0);
+
+      await dbClient.query(
+        `
+        UPDATE carts
+        SET discount_code = $1,
+            discount_percent = $2,
+            updated_at = NOW()
+        WHERE cart_id = $3
+        `,
+        [liveDiscountCode, liveDiscountPercent, cartId]
+      );
+    }
+
+    const subtotal = liveItems.reduce(
+      (sum, it) => sum + Number(it.qty || 0) * Number(it.price_pence || 0),
+      0
+    );
+    const shipping = getShippingPenceForCountry(liveShippingProfile.country);
+    const totals = calculateDiscountedTotals(subtotal, shipping, liveDiscountPercent);
+
+    const orderRes = await dbClient.query(
+      `
+      INSERT INTO orders (
+        user_id, username, full_name, email, phone, full_address, country,
+        subtotal_pence, shipping_pence, total_pence, discount_code,
+        discount_percent, discount_amount_pence, status, updated_at
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',NOW())
+      RETURNING order_id, created_at
+      `,
+      [
+        user.id,
+        user.tag,
+        liveShippingProfile.full_name,
+        liveShippingProfile.email,
+        liveShippingProfile.phone,
+        liveShippingProfile.full_address,
+        liveShippingProfile.country,
+        subtotal,
+        shipping,
+        totals.total,
+        liveDiscountCode,
+        liveDiscountPercent,
+        totals.discountAmount,
+      ]
+    );
+
+    const orderId = orderRes.rows[0].order_id;
+    const orderCreatedAt = orderRes.rows[0].created_at || new Date();
+
+    for (const it of liveItems) {
+      const stockUpdate = await dbClient.query(
+        `
+        UPDATE stock_items
+        SET stock_qty = stock_qty - $1,
+            updated_at = NOW()
+        WHERE sku = $2 AND stock_qty >= $1
+        RETURNING sku
+        `,
+        [it.qty, it.sku]
+      );
+
+      if (!stockUpdate.rowCount) {
+        throw new Error(`Stock update failed for ${it.name}.`);
+      }
+
+      await dbClient.query(
+        `
+        INSERT INTO order_items (order_id, sku, name, size, color, qty, price_pence)
+        VALUES ($1,$2,$3,$4,$5,$6,$7)
+        `,
+        [orderId, it.sku, it.name, it.size, it.color, it.qty, it.price_pence]
+      );
+    }
+
+    await recordCustomerLeadOrder(dbClient, {
+      userId: user.id,
+      username: user.tag,
+      fullName: liveShippingProfile.full_name,
+      email: liveShippingProfile.email,
+      phone: liveShippingProfile.phone,
+      fullAddress: liveShippingProfile.full_address,
+      country: liveShippingProfile.country,
+      orderCreatedAt,
+    });
+
+    if (liveDiscountCode) {
+      await recordDiscountCodeUse(dbClient, user.id, liveDiscountCode, orderId);
+    }
+
+    await dbClient.query(
+      `
+      DELETE FROM cart_items
+      WHERE cart_id = $1
+      `,
+      [cartId]
+    );
+
+    await dbClient.query(
+      `
+      UPDATE carts
+      SET discount_code = NULL,
+          discount_percent = 0,
+          updated_at = NOW()
+      WHERE cart_id = $1
+      `,
+      [cartId]
+    );
+
+    await dbClient.query("COMMIT");
+
+    let receiptChannel = null;
+
+    try {
+      receiptChannel = await createReceiptChannel(guild, user, orderId);
+
+      await pool.query(
+        `UPDATE orders SET receipt_channel_id = $1, updated_at = NOW() WHERE order_id = $2`,
+        [receiptChannel.id, orderId]
+      );
+
+      await receiptChannel.send({
+        content:
+          `<@${user.id}> **Thanks!** Your order has been received.\n\n` +
+          `✅ Please pay by **bank transfer** using the details in the receipt below.\n` +
+          `✅ After payment, upload a **screenshot of payment** in this private order chat before your order can be shipped.\n` +
+          `⚠️ Use **only** your assigned order number as the bank transfer reference.\n` +
+          `⚠️ Do not include product names or any other wording in the reference.\n` +
+          `⚠️ Incorrect bank references may delay or cancel your order.\n\n` +
+          `<@&${STAFF_ROLE_ID}> once confirmed, please mark as paid or dispatched when appropriate.`,
+        embeds: [
+          receiptEmbed(
+            orderId,
+            liveItems,
+            subtotal,
+            totals.discountAmount,
+            liveDiscountCode,
+            shipping,
+            totals.total,
+            liveShippingProfile,
+            "pending"
+          ),
+        ],
+        components: staffReceiptControls(orderId, "pending"),
+      });
+    } catch (receiptErr) {
+      console.error("Receipt channel creation failed:", receiptErr);
+    }
+
+    return {
+      ok: true,
+      orderId,
+      receiptChannel,
+    };
+  } catch (err) {
+    await dbClient.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    dbClient.release();
+  }
 }
 
 /* -------------------------- SLASH COMMAND SETUP ------------------------- */
@@ -3760,195 +4073,41 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
 
-        const hasPending = await hasUserPendingOrder(interaction.user.id);
-        if (hasPending) {
-          return interaction.reply({
-            content: "You already have a pending order. Please wait until it is processed.",
-            flags: 64,
-          });
-        }
+        const prepared = await prepareOrderSubmission(interaction.user.id);
 
-        const shippingProfile = await getUserShippingProfile(interaction.user.id);
-        if (!shippingProfile) {
-          return interaction.showModal(shippingModal());
-        }
-
-        const cart = await getCartSummary(interaction.user.id);
-        if (!cart.items.length) {
-          return interaction.reply({
-            content: "Your cart is empty.",
-            flags: 64,
-          });
-        }
-
-        for (const it of cart.items) {
-          const stockQty = await getStockForSku(it.sku);
-          if (it.qty > stockQty) {
-            return interaction.reply({
-              content: `Only ${stockQty} left in stock for ${it.name}. Please update your basket and try again.`,
-              flags: 64,
-            });
+        if (!prepared.ok) {
+          if (prepared.reason === "missing_shipping") {
+            return interaction.showModal(shippingModal());
           }
-        }
 
-        let discount = await getCartDiscount(interaction.user.id);
-
-        if (discount.discount_code) {
-          const validation = await validateDiscountCodeForUser(
-            interaction.user.id,
-            discount.discount_code
-          );
-
-          if (!validation.valid) {
-            await clearCartDiscount(interaction.user.id);
-
+          if (prepared.reason === "empty_cart") {
             return interaction.reply({
-              content: `${validation.reason} The code has been removed from this basket. Please review your cart and submit again.`,
+              content: "Your cart is empty.",
               flags: 64,
             });
           }
 
-          if (
-            Number(discount.discount_percent || 0) !==
-            Number(validation.discount_percent || 0)
-          ) {
-            await setCartDiscount(
-              interaction.user.id,
-              validation.code,
-              validation.discount_percent
-            );
-
-            discount = await getCartDiscount(interaction.user.id);
-          }
+          return interaction.reply({
+            content: prepared.message || "Your order could not be submitted. Please try again.",
+            flags: 64,
+          });
         }
-
-        const shipping = getShippingPenceForCountry(shippingProfile.country);
-        const subtotal = cart.subtotal_pence;
-        const totals = calculateDiscountedTotals(
-          subtotal,
-          shipping,
-          discount.discount_percent
-        );
-        const total = totals.total;
 
         setSubmitLock(interaction.user.id);
 
         try {
-          const orderRes = await pool.query(
-            `
-            INSERT INTO orders (
-              user_id, username, full_name, email, phone, full_address, country,
-              subtotal_pence, shipping_pence, total_pence, discount_code,
-              discount_percent, discount_amount_pence, status, updated_at
-            )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',NOW())
-            RETURNING order_id, created_at
-            `,
-            [
-              interaction.user.id,
-              interaction.user.tag,
-              shippingProfile.full_name,
-              shippingProfile.email,
-              shippingProfile.phone,
-              shippingProfile.full_address,
-              shippingProfile.country,
-              subtotal,
-              shipping,
-              total,
-              discount.discount_code,
-              discount.discount_percent,
-              totals.discountAmount,
-            ]
-          );
-
-          const orderId = orderRes.rows[0].order_id;
-          const orderCreatedAt = orderRes.rows[0].created_at || new Date();
-
-          for (const it of cart.items) {
-            await pool.query(
-              `
-              INSERT INTO order_items (order_id, sku, name, size, color, qty, price_pence)
-              VALUES ($1,$2,$3,$4,$5,$6,$7)
-              `,
-              [orderId, it.sku, it.name, it.size, it.color, it.qty, it.price_pence]
-            );
-
-            const stockUpdate = await pool.query(
-              `
-              UPDATE stock_items
-              SET stock_qty = stock_qty - $1,
-                  updated_at = NOW()
-              WHERE sku = $2 AND stock_qty >= $1
-              RETURNING sku
-              `,
-              [it.qty, it.sku]
-            );
-
-            if (!stockUpdate.rowCount) {
-              throw new Error(`Stock update failed for ${it.name}.`);
-            }
-          }
-
-          await recordCustomerLeadOrder({
-            userId: interaction.user.id,
-            username: interaction.user.tag,
-            fullName: shippingProfile.full_name,
-            email: shippingProfile.email,
-            phone: shippingProfile.phone,
-            fullAddress: shippingProfile.full_address,
-            country: shippingProfile.country,
-            orderCreatedAt,
+          const result = await createOrderTransaction({
+            guild: interaction.guild,
+            user: interaction.user,
+            prepared,
           });
 
-          if (discount.discount_code) {
-            await recordDiscountCodeUse(
-              interaction.user.id,
-              discount.discount_code,
-              orderId
-            );
-          }
-
-          const receiptChannel = await createReceiptChannel(
-            interaction.guild,
-            interaction.user,
-            orderId
-          );
-
-          await pool.query(
-            `UPDATE orders SET receipt_channel_id = $1, updated_at = NOW() WHERE order_id = $2`,
-            [receiptChannel.id, orderId]
-          );
-
-          await receiptChannel.send({
-            content:
-              `<@${interaction.user.id}> **Thanks!** Your order has been received.\n\n` +
-              `✅ Please pay by **bank transfer** using the details in the receipt below.\n` +
-              `✅ After payment, upload a **screenshot of payment** in this private order chat before your order can be shipped.\n` +
-              `⚠️ Use **only** your assigned order number as the bank transfer reference.\n` +
-              `⚠️ Do not include product names or any other wording in the reference.\n` +
-              `⚠️ Incorrect bank references may delay or cancel your order.\n\n` +
-              `<@&${STAFF_ROLE_ID}> once confirmed, please mark as paid or dispatched when appropriate.`,
-            embeds: [
-              receiptEmbed(
-                orderId,
-                cart.items,
-                subtotal,
-                totals.discountAmount,
-                discount.discount_code,
-                shipping,
-                total,
-                shippingProfile,
-                "pending"
-              ),
-            ],
-            components: staffReceiptControls(orderId, "pending"),
-          });
-
-          await clearCart(interaction.user.id);
-          await clearCartDiscount(interaction.user.id);
+          const receiptMessage = result.receiptChannel
+            ? `✅ Order submitted! Please check <#${result.receiptChannel.id}> to complete payment.`
+            : `✅ Order submitted! Your receipt channel could not be created automatically, so staff will need to follow this up manually.`;
 
           await interaction.reply({
-            content: `✅ Order submitted! Please check <#${receiptChannel.id}> to complete payment.`,
+            content: receiptMessage,
             flags: 64,
           });
 
@@ -3963,14 +4122,14 @@ client.on("interactionCreate", async (interaction) => {
           console.error("Order submit failed:", err);
 
           return interaction.reply({
-            content: "Something went wrong while creating your order. Please try again.",
+            content: err.message || "Something went wrong while creating your order. Please try again.",
             flags: 64,
           });
         } finally {
           clearSubmitLock(interaction.user.id);
         }
       }
-      
+
       /* ------------------------ VERIFICATION ACTIONS ---------------------- */
 
       if (customId.startsWith("verify_approve:")) {
@@ -4726,26 +4885,26 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.showModal(staffRenameCategoryModal(categoryId, category.category_name));
       }
 
-if (customId === "staff_delete_category_select") {
-  const categoryId = interaction.values[0];
-  const category = await getCategoryById(categoryId);
-  if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
+      if (customId === "staff_delete_category_select") {
+        const categoryId = interaction.values[0];
+        const category = await getCategoryById(categoryId);
+        if (!category) return interaction.reply({ content: "Category not found.", flags: 64 });
 
-  try {
-    const deleted = await deleteCategory(categoryId);
-    if (!deleted) return interaction.reply({ content: "Category not found.", flags: 64 });
+        try {
+          const deleted = await deleteCategory(categoryId);
+          if (!deleted) return interaction.reply({ content: "Category not found.", flags: 64 });
 
-    return interaction.update({
-      content: `✅ Deleted category **${deleted.category_name}**`,
-      components: staffCategoriesPanel().components,
-    });
-  } catch (err) {
-    return interaction.reply({
-      content: err.message || "Could not delete category.",
-      flags: 64,
-    });
-  }
-}
+          return interaction.update({
+            content: `✅ Deleted category **${deleted.category_name}**`,
+            components: staffCategoriesPanel().components,
+          });
+        } catch (err) {
+          return interaction.reply({
+            content: err.message || "Could not delete category.",
+            flags: 64,
+          });
+        }
+      }
 
       if (customId.startsWith("staff_member_search_select:")) {
         const [, action] = customId.split(":");
@@ -4941,7 +5100,7 @@ if (customId === "staff_delete_category_select") {
 
     /* ----------------------------- MODAL SUBMITS ------------------------- */
 
-    if (interaction.isModalSubmit()) {
+      if (interaction.isModalSubmit()) {
       const { customId } = interaction;
 
       if (
