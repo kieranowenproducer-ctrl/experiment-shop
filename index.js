@@ -409,16 +409,6 @@ function formatFullShippingInfo({ fullName, email, phone, fullAddress, country }
     .join("\n");
 }
 
-function formatConsentValue(value) {
-  if (value === true) return "Yes";
-  if (value === false) return "No";
-  return "Not recorded";
-}
-
-function formatOptOutValue(value) {
-  return value ? "Yes" : "No";
-}
-
 function formatDiscordTimestamp(value, fallback = "None") {
   if (!value) return fallback;
 
@@ -474,10 +464,6 @@ function buildCustomerLeadCsv(rows) {
     "first_order_date",
     "last_order_date",
     "total_orders",
-    "marketing_consent_status",
-    "marketing_consent_timestamp",
-    "marketing_consent_source",
-    "opt_out_status",
     "updated_at",
   ];
 
@@ -496,12 +482,6 @@ function buildCustomerLeadCsv(rows) {
         formatCsvDate(row.first_order_date),
         formatCsvDate(row.last_order_date),
         Number(row.total_orders || 0),
-        row.marketing_consent_status === null || row.marketing_consent_status === undefined
-          ? ""
-          : row.marketing_consent_status,
-        formatCsvDate(row.marketing_consent_timestamp),
-        row.marketing_consent_source,
-        Boolean(row.opt_out_status),
         formatCsvDate(row.updated_at),
       ]
         .map(escapeCsvValue)
@@ -522,9 +502,9 @@ function buildCustomerLeadCsvFile(rows, fileName) {
 
 function customerExportPanelText() {
   return (
-    `🟣 **Customers / Leads**\n\n` +
-    `Main workflow is now export based.\n` +
-    `Use CSV exports for lead lists and keep lookup for one off searches.`
+    `🟣 **Customers**\n\n` +
+    `Customer details from the shipping form are stored for admin and record keeping.\n` +
+    `Use CSV exports for customer lists and use lookup for one off searches.`
   );
 }
 
@@ -951,9 +931,15 @@ async function initDb() {
   `);
 
   await pool.query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cart_items_unique_line
+    ON cart_items (cart_id, sku, size, color);
+  `);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS orders (
       order_id BIGSERIAL PRIMARY KEY,
       user_id TEXT NOT NULL,
+      username TEXT,
       full_name TEXT,
       email TEXT,
       phone TEXT,
@@ -967,28 +953,14 @@ async function initDb() {
       discount_amount_pence INT NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending',
       receipt_channel_id TEXT,
-      created_at TIMESTAMPTZ DEFAULT NOW()
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
 
   await pool.query(`
     ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS username TEXT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE orders
-    ADD COLUMN IF NOT EXISTS marketing_consent_status BOOLEAN;
-  `);
-
-  await pool.query(`
-    ALTER TABLE orders
-    ADD COLUMN IF NOT EXISTS marketing_consent_timestamp TIMESTAMPTZ;
-  `);
-
-  await pool.query(`
-    ALTER TABLE orders
-    ADD COLUMN IF NOT EXISTS marketing_consent_source TEXT;
   `);
 
   await pool.query(`
@@ -1021,10 +993,6 @@ async function initDb() {
       first_order_date TIMESTAMPTZ,
       last_order_date TIMESTAMPTZ,
       total_orders INT NOT NULL DEFAULT 0,
-      marketing_consent_status BOOLEAN,
-      marketing_consent_timestamp TIMESTAMPTZ,
-      marketing_consent_source TEXT,
-      opt_out_status BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -1073,26 +1041,6 @@ async function initDb() {
   await pool.query(`
     ALTER TABLE customer_leads
     ADD COLUMN IF NOT EXISTS total_orders INT NOT NULL DEFAULT 0;
-  `);
-
-  await pool.query(`
-    ALTER TABLE customer_leads
-    ADD COLUMN IF NOT EXISTS marketing_consent_status BOOLEAN;
-  `);
-
-  await pool.query(`
-    ALTER TABLE customer_leads
-    ADD COLUMN IF NOT EXISTS marketing_consent_timestamp TIMESTAMPTZ;
-  `);
-
-  await pool.query(`
-    ALTER TABLE customer_leads
-    ADD COLUMN IF NOT EXISTS marketing_consent_source TEXT;
-  `);
-
-  await pool.query(`
-    ALTER TABLE customer_leads
-    ADD COLUMN IF NOT EXISTS opt_out_status BOOLEAN NOT NULL DEFAULT FALSE;
   `);
 
   await pool.query(`
@@ -1647,9 +1595,6 @@ async function upsertCustomerLeadProfile({
   phone,
   fullAddress,
   country,
-  marketingConsentStatus = null,
-  marketingConsentTimestamp = null,
-  marketingConsentSource = null,
 }) {
   const cleanUserId = String(userId || "").trim();
   if (!cleanUserId) {
@@ -1671,10 +1616,6 @@ async function upsertCustomerLeadProfile({
     country: cleanCountry,
   });
 
-  const hasConsentValue = typeof marketingConsentStatus === "boolean";
-  const consentTimestamp = hasConsentValue ? marketingConsentTimestamp || new Date() : null;
-  const consentSource = hasConsentValue ? nullIfBlank(marketingConsentSource) : null;
-
   await pool.query(
     `
     INSERT INTO customer_leads (
@@ -1685,13 +1626,9 @@ async function upsertCustomerLeadProfile({
       phone,
       full_shipping_info,
       country,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
     ON CONFLICT (discord_user_id) DO UPDATE
     SET username = COALESCE(EXCLUDED.username, customer_leads.username),
         full_name = COALESCE(EXCLUDED.full_name, customer_leads.full_name),
@@ -1699,23 +1636,6 @@ async function upsertCustomerLeadProfile({
         phone = COALESCE(EXCLUDED.phone, customer_leads.phone),
         full_shipping_info = COALESCE(EXCLUDED.full_shipping_info, customer_leads.full_shipping_info),
         country = COALESCE(EXCLUDED.country, customer_leads.country),
-        marketing_consent_status = CASE
-          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_status
-          ELSE EXCLUDED.marketing_consent_status
-        END,
-        marketing_consent_timestamp = CASE
-          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_timestamp
-          ELSE EXCLUDED.marketing_consent_timestamp
-        END,
-        marketing_consent_source = CASE
-          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_source
-          ELSE EXCLUDED.marketing_consent_source
-        END,
-        opt_out_status = CASE
-          WHEN EXCLUDED.marketing_consent_status = FALSE THEN TRUE
-          WHEN EXCLUDED.marketing_consent_status = TRUE THEN FALSE
-          ELSE customer_leads.opt_out_status
-        END,
         updated_at = NOW()
     `,
     [
@@ -1726,10 +1646,6 @@ async function upsertCustomerLeadProfile({
       cleanPhone,
       nullIfBlank(fullShippingInfo),
       cleanCountry,
-      hasConsentValue ? marketingConsentStatus : null,
-      consentTimestamp,
-      consentSource,
-      hasConsentValue ? !marketingConsentStatus : false,
     ]
   );
 }
@@ -1742,9 +1658,6 @@ async function recordCustomerLeadOrder({
   phone,
   fullAddress,
   country,
-  marketingConsentStatus = null,
-  marketingConsentTimestamp = null,
-  marketingConsentSource = null,
   orderCreatedAt = new Date(),
 }) {
   const cleanUserId = String(userId || "").trim();
@@ -1767,10 +1680,6 @@ async function recordCustomerLeadOrder({
     country: cleanCountry,
   });
 
-  const hasConsentValue = typeof marketingConsentStatus === "boolean";
-  const consentTimestamp = hasConsentValue ? marketingConsentTimestamp || orderCreatedAt || new Date() : null;
-  const consentSource = hasConsentValue ? nullIfBlank(marketingConsentSource) : null;
-
   await pool.query(
     `
     INSERT INTO customer_leads (
@@ -1784,13 +1693,9 @@ async function recordCustomerLeadOrder({
       first_order_date,
       last_order_date,
       total_orders,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
       updated_at
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 1, $9, $10, $11, $12, NOW())
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 1, NOW())
     ON CONFLICT (discord_user_id) DO UPDATE
     SET username = COALESCE(EXCLUDED.username, customer_leads.username),
         full_name = COALESCE(EXCLUDED.full_name, customer_leads.full_name),
@@ -1805,23 +1710,6 @@ async function recordCustomerLeadOrder({
           ELSE GREATEST(customer_leads.last_order_date, EXCLUDED.last_order_date)
         END,
         total_orders = customer_leads.total_orders + 1,
-        marketing_consent_status = CASE
-          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_status
-          ELSE EXCLUDED.marketing_consent_status
-        END,
-        marketing_consent_timestamp = CASE
-          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_timestamp
-          ELSE EXCLUDED.marketing_consent_timestamp
-        END,
-        marketing_consent_source = CASE
-          WHEN EXCLUDED.marketing_consent_status IS NULL THEN customer_leads.marketing_consent_source
-          ELSE EXCLUDED.marketing_consent_source
-        END,
-        opt_out_status = CASE
-          WHEN EXCLUDED.marketing_consent_status = FALSE THEN TRUE
-          WHEN EXCLUDED.marketing_consent_status = TRUE THEN FALSE
-          ELSE customer_leads.opt_out_status
-        END,
         updated_at = NOW()
     `,
     [
@@ -1833,42 +1721,7 @@ async function recordCustomerLeadOrder({
       nullIfBlank(fullShippingInfo),
       cleanCountry,
       orderCreatedAt,
-      hasConsentValue ? marketingConsentStatus : null,
-      consentTimestamp,
-      consentSource,
-      hasConsentValue ? !marketingConsentStatus : false,
     ]
-  );
-}
-
-async function updateCustomerLeadConsent(userId, consentStatus, source = "shop_checkout") {
-  const cleanUserId = String(userId || "").trim();
-  if (!cleanUserId) {
-    throw new Error("User ID is required for consent update.");
-  }
-
-  const hasConsentValue = typeof consentStatus === "boolean";
-  if (!hasConsentValue) return;
-
-  await pool.query(
-    `
-    INSERT INTO customer_leads (
-      discord_user_id,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
-      updated_at
-    )
-    VALUES ($1, $2, NOW(), $3, $4, NOW())
-    ON CONFLICT (discord_user_id) DO UPDATE
-    SET marketing_consent_status = EXCLUDED.marketing_consent_status,
-        marketing_consent_timestamp = EXCLUDED.marketing_consent_timestamp,
-        marketing_consent_source = EXCLUDED.marketing_consent_source,
-        opt_out_status = EXCLUDED.opt_out_status,
-        updated_at = NOW()
-    `,
-    [cleanUserId, consentStatus, nullIfBlank(source), !consentStatus]
   );
 }
 
@@ -1886,10 +1739,6 @@ async function getCustomerLeadByUserId(userId) {
       first_order_date,
       last_order_date,
       total_orders,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
       created_at,
       updated_at
     FROM customer_leads
@@ -1918,10 +1767,6 @@ async function getRecentCustomerLeads(limit = 10) {
       first_order_date,
       last_order_date,
       total_orders,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
       created_at,
       updated_at
     FROM customer_leads
@@ -1939,9 +1784,7 @@ async function getRecentCustomerLeads(limit = 10) {
 
 async function getCustomerLeadExportRows(exportType = "all") {
   let whereSql = "";
-  if (exportType === "marketing_yes") {
-    whereSql = `WHERE marketing_consent_status = TRUE`;
-  } else if (exportType === "ordered") {
+  if (exportType === "ordered") {
     whereSql = `WHERE COALESCE(total_orders, 0) > 0`;
   }
 
@@ -1957,10 +1800,6 @@ async function getCustomerLeadExportRows(exportType = "all") {
       first_order_date,
       last_order_date,
       total_orders,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
       created_at,
       updated_at
     FROM customer_leads
@@ -1993,10 +1832,6 @@ async function findCustomerLeadByLookupValue(lookupValue) {
       first_order_date,
       last_order_date,
       total_orders,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
       created_at,
       updated_at
     FROM customer_leads
@@ -2029,10 +1864,6 @@ async function findCustomerLeadByLookupValue(lookupValue) {
       first_order_date,
       last_order_date,
       total_orders,
-      marketing_consent_status,
-      marketing_consent_timestamp,
-      marketing_consent_source,
-      opt_out_status,
       created_at,
       updated_at
     FROM customer_leads
@@ -2052,7 +1883,7 @@ async function findCustomerLeadByLookupValue(lookupValue) {
 
 function buildCustomerLeadLookupEmbed(lead) {
   return new EmbedBuilder()
-    .setTitle("Customer / Lead")
+    .setTitle("Customer")
     .addFields(
       { name: "Discord User ID", value: truncateForField(lead.discord_user_id, 1024, "Unknown"), inline: true },
       { name: "Username", value: truncateForField(lead.username, 1024, "Unknown"), inline: true },
@@ -2071,28 +1902,8 @@ function buildCustomerLeadLookupEmbed(lead) {
         inline: true,
       },
       {
-        name: "Marketing Consent",
-        value: formatConsentValue(lead.marketing_consent_status),
-        inline: true,
-      },
-      {
-        name: "Consent Timestamp",
-        value: formatDiscordTimestamp(lead.marketing_consent_timestamp, "None"),
-        inline: true,
-      },
-      {
-        name: "Opt Out",
-        value: formatOptOutValue(lead.opt_out_status),
-        inline: true,
-      },
-      {
         name: "Country",
         value: truncateForField(lead.country, 1024, "Unknown"),
-        inline: true,
-      },
-      {
-        name: "Consent Source",
-        value: truncateForField(lead.marketing_consent_source, 1024, "None"),
         inline: true,
       },
       {
@@ -2157,15 +1968,24 @@ async function addCartItem(userId, item) {
 
   const cartId = await getOrCreateCart(userId);
 
-await pool.query(
-  `
-  INSERT INTO cart_items (cart_id, sku, name, size, color, qty, price_pence)
-  VALUES ($1, $2, $3, $4, $5, $6, $7)
-  ON CONFLICT (cart_id, sku, size, color)
-  DO UPDATE SET qty = cart_items.qty + EXCLUDED.qty
-  `,
-  [cartId, item.sku, item.name, item.size, item.color, item.qty, item.price_pence]
-);
+  await pool.query(
+    `
+    INSERT INTO cart_items (cart_id, sku, name, size, color, qty, price_pence)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (cart_id, sku, size, color)
+    DO UPDATE SET qty = cart_items.qty + EXCLUDED.qty
+    `,
+    [cartId, item.sku, item.name, item.size, item.color, item.qty, item.price_pence]
+  );
+
+  await pool.query(
+    `
+    UPDATE carts
+    SET updated_at = NOW()
+    WHERE cart_id = $1
+    `,
+    [cartId]
+  );
 
   return { error: false };
 }
@@ -2201,9 +2021,7 @@ async function upsertProfile(
   fullName,
   email,
   phone,
-  shipping,
-  marketingConsentStatus = null,
-  marketingConsentSource = null
+  shipping
 ) {
   const cleanFullName = nullIfBlank(fullName);
   const cleanEmail = nullIfBlank(email);
@@ -2244,10 +2062,6 @@ async function upsertProfile(
     phone: cleanPhone,
     fullAddress: cleanFullAddress,
     country: cleanCountry,
-    marketingConsentStatus,
-    marketingConsentTimestamp:
-      typeof marketingConsentStatus === "boolean" ? new Date() : null,
-    marketingConsentSource,
   });
 }
 
@@ -2425,8 +2239,7 @@ function receiptEmbed(
   shipping,
   total,
   shippingProfile,
-  status = "pending",
-  marketingConsentStatus = null
+  status = "pending"
 ) {
   const lines = items.map(
     (it) => `• **${it.name}** (${it.size}, ${it.color}) × ${it.qty} — ${money(it.qty * it.price_pence)}`
@@ -2456,11 +2269,6 @@ function receiptEmbed(
         `${shippingProfile.phone}\n` +
         `${shippingProfile.full_address}\n` +
         `${shippingProfile.country}`,
-    },
-    {
-      name: "Marketing Consent",
-      value: formatConsentValue(marketingConsentStatus),
-      inline: true,
     },
     {
       name: "Payment — Bank Transfer",
@@ -2698,7 +2506,7 @@ function staffOrderLookupModal() {
 function staffCustomerLookupModal() {
   const modal = new ModalBuilder()
     .setCustomId("staff_customer_lookup_modal")
-    .setTitle("Lookup Customer / Lead");
+    .setTitle("Lookup Customer");
 
   const lookupInput = new TextInputBuilder()
     .setCustomId("lookup_customer_value")
@@ -3316,18 +3124,14 @@ function staffCustomersPanel() {
       new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("staff_export_all_leads_csv")
-          .setLabel("Export All Leads CSV")
+          .setLabel("Export All Customers CSV")
           .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId("staff_export_marketing_yes_csv")
-          .setLabel("Export Marketing Yes CSV")
-          .setStyle(ButtonStyle.Success)
-      ),
-      new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("staff_export_ordered_customers_csv")
           .setLabel("Export Ordered Customers CSV")
-          .setStyle(ButtonStyle.Primary),
+          .setStyle(ButtonStyle.Primary)
+      ),
+      new ActionRowBuilder().addComponents(
         new ButtonBuilder()
           .setCustomId("staff_lookup_customer")
           .setLabel("Lookup Customer")
@@ -3619,11 +3423,10 @@ client.on("interactionCreate", async (interaction) => {
           `**How it works:**\n` +
           `1) Click the button below to get started\n` +
           `2) Enter your shipping details\n` +
-          `3) Choose your optional marketing preference\n` +
-          `4) Browse categories and move back and forth freely\n` +
-          `5) Add multiple items to your basket\n` +
-          `6) Apply ${WELCOME_CODE} on your first order for ${WELCOME_DISCOUNT_PERCENT}% off\n` +
-          `7) Submit your order when you're done\n\n` +
+          `3) Browse categories and move back and forth freely\n` +
+          `4) Add multiple items to your basket\n` +
+          `5) Apply ${WELCOME_CODE} on your first order for ${WELCOME_DISCOUNT_PERCENT}% off\n` +
+          `6) Submit your order when you're done\n\n` +
           `**Important payment note:**\n` +
           `A **screenshot of payment must be provided in your private order chat** as evidence before your order can be shipped.\n` +
           `Failure to provide payment proof may lead to delays.\n\n` +
@@ -3719,9 +3522,6 @@ client.on("interactionCreate", async (interaction) => {
         customId === "cart_discount" ||
         customId === "cart_clear" ||
         customId === "cart_submit" ||
-        customId === "marketing_consent_yes" ||
-        customId === "marketing_consent_no" ||
-        customId === "marketing_consent_skip" ||
         customId.startsWith("add_qty:") ||
         customId.startsWith("add_qty_other:") ||
         customId.startsWith("back_to_items:")
@@ -3741,51 +3541,6 @@ client.on("interactionCreate", async (interaction) => {
         return interaction.showModal(productRequestModal());
       }
 
-      /* ----------------------- MARKETING CONSENT ------------------------ */
-
-      if (customId === "marketing_consent_yes") {
-        await updateCustomerLeadConsent(interaction.user.id, true, "shop_shipping_reply");
-
-        return interaction.update({
-          content:
-            "✅ Marketing preference saved: **Yes**\n\n" +
-            "You can continue from your private shop channel below.",
-          components: [
-            ...interaction.message.components.filter(
-              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
-            ),
-          ],
-        });
-      }
-
-      if (customId === "marketing_consent_no") {
-        await updateCustomerLeadConsent(interaction.user.id, false, "shop_shipping_reply");
-
-        return interaction.update({
-          content:
-            "✅ Marketing preference saved: **No**\n\n" +
-            "You can continue from your private shop channel below.",
-          components: [
-            ...interaction.message.components.filter(
-              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
-            ),
-          ],
-        });
-      }
-
-      if (customId === "marketing_consent_skip") {
-        return interaction.update({
-          content:
-            "Skipped for now.\n\n" +
-            "You can continue from your private shop channel below.",
-          components: [
-            ...interaction.message.components.filter(
-              (row) => row.components?.some((c) => c.style === ButtonStyle.Link)
-            ),
-          ],
-        });
-      }
-
       /* -------------------------- STAFF NAVIGATION ------------------------- */
 
       if (customId === "staff_panel_home") {
@@ -3797,7 +3552,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (customId === "staff_nav_customers") {
-        return interaction.update(staffCustomersPanel()); // updated panel used
+        return interaction.update(staffCustomersPanel());
       }
 
       if (customId === "staff_nav_products") {
@@ -3832,23 +3587,8 @@ client.on("interactionCreate", async (interaction) => {
         const rows = await getCustomerLeadExportRows("all");
 
         return interaction.editReply({
-          content: `✅ Exported ${rows.length} lead record(s).`,
-          files: [buildCustomerLeadCsvFile(rows, "all_leads_export.csv")],
-        });
-      }
-
-      if (customId === "staff_export_marketing_yes_csv") {
-        if (!isStaff(interaction.member)) {
-          return interaction.reply({ content: "Staff only.", flags: 64 });
-        }
-
-        await interaction.deferReply({ flags: 64 });
-
-        const rows = await getCustomerLeadExportRows("marketing_yes");
-
-        return interaction.editReply({
-          content: `✅ Exported ${rows.length} marketing consent record(s).`,
-          files: [buildCustomerLeadCsvFile(rows, "marketing_yes_export.csv")],
+          content: `✅ Exported ${rows.length} customer record(s).`,
+          files: [buildCustomerLeadCsvFile(rows, "all_customers_export.csv")],
         });
       }
 
@@ -3873,7 +3613,7 @@ client.on("interactionCreate", async (interaction) => {
 
       /* -------------------------- SHOP BUTTONS --------------------------- */
 
-            if (customId === "browse_categories") {
+      if (customId === "browse_categories") {
         return showCategoriesInSession(interaction, "Choose a category:");
       }
 
@@ -3933,21 +3673,21 @@ client.on("interactionCreate", async (interaction) => {
           });
         }
 
-const addResult = await addCartItem(interaction.user.id, {
-  sku: item.sku,
-  name: item.product_name,
-  size: DEFAULT_SIZE,
-  color: DEFAULT_COLOR,
-  qty,
-  price_pence: item.price_pence,
-});
+        const addResult = await addCartItem(interaction.user.id, {
+          sku: item.sku,
+          name: item.product_name,
+          size: DEFAULT_SIZE,
+          color: DEFAULT_COLOR,
+          qty,
+          price_pence: item.price_pence,
+        });
 
-if (addResult?.error) {
-  return interaction.update({
-    content: `❌ ${addResult.message}`,
-    components: await itemSelectComponents(categoryId),
-  });
-}
+        if (addResult?.error) {
+          return interaction.update({
+            content: `❌ ${addResult.message}`,
+            components: await itemSelectComponents(categoryId),
+          });
+        }
 
         const content = await buildCartMessage(interaction.user.id);
 
@@ -4066,18 +3806,6 @@ if (addResult?.error) {
             }
           }
 
-          const leadProfile = await getCustomerLeadByUserId(interaction.user.id);
-          const marketingConsentStatus =
-            typeof leadProfile?.marketing_consent_status === "boolean"
-              ? leadProfile.marketing_consent_status
-              : null;
-          const marketingConsentTimestamp =
-            marketingConsentStatus !== null ? leadProfile?.marketing_consent_timestamp || new Date() : null;
-          const marketingConsentSource =
-            marketingConsentStatus !== null
-              ? leadProfile?.marketing_consent_source || "shop_checkout"
-              : null;
-
           const totals = calculateDiscountedTotals(subtotal, shipping, discount.discount_percent);
           const total = totals.total;
 
@@ -4086,11 +3814,9 @@ if (addResult?.error) {
             INSERT INTO orders (
               user_id, username, full_name, email, phone, full_address, country,
               subtotal_pence, shipping_pence, total_pence, discount_code,
-              discount_percent, discount_amount_pence, status,
-              marketing_consent_status, marketing_consent_timestamp, marketing_consent_source,
-              updated_at
+              discount_percent, discount_amount_pence, status, updated_at
             )
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14,$15,$16,NOW())
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',NOW())
             RETURNING order_id, created_at
             `,
             [
@@ -4107,9 +3833,6 @@ if (addResult?.error) {
               discount.discount_code,
               discount.discount_percent,
               totals.discountAmount,
-              marketingConsentStatus,
-              marketingConsentTimestamp,
-              marketingConsentSource,
             ]
           );
 
@@ -4149,9 +3872,6 @@ if (addResult?.error) {
             phone: shippingProfile.phone,
             fullAddress: shippingProfile.full_address,
             country: shippingProfile.country,
-            marketingConsentStatus,
-            marketingConsentTimestamp,
-            marketingConsentSource,
             orderCreatedAt,
           });
 
@@ -4185,8 +3905,7 @@ if (addResult?.error) {
                 shipping,
                 total,
                 shippingProfile,
-                "pending",
-                marketingConsentStatus
+                "pending"
               ),
             ],
             components: staffReceiptControls(orderId, "pending"),
@@ -4368,24 +4087,22 @@ if (addResult?.error) {
                 const displayName = leadDisplayName(lead);
                 const email = lead.email || "No email";
                 const phone = lead.phone || "No phone";
-                const consent = formatConsentValue(lead.marketing_consent_status);
                 const orders = Number(lead.total_orders || 0);
                 return (
                   `${index + 1}. **${truncate100(displayName)}**\n` +
                   `Email: ${truncate100(email)}\n` +
                   `Phone: ${truncate100(phone)}\n` +
-                  `Consent: ${consent}\n` +
                   `Orders: ${orders}`
                 );
               })
               .join("\n\n")
-          : "_No customer or lead records found_";
+          : "_No customer records found_";
 
         return interaction.update({
-          content: "Recent customers / leads:",
+          content: "Recent customers:",
           embeds: [
             new EmbedBuilder()
-              .setTitle("Recent Customers / Leads")
+              .setTitle("Recent Customers")
               .setDescription(description),
           ],
           components: [navRow()],
@@ -5225,27 +4942,11 @@ if (addResult?.error) {
             .setURL(`https://discord.com/channels/${interaction.guild.id}/${channel.id}`)
         );
 
-        const consentRow = new ActionRowBuilder().addComponents(
-          new ButtonBuilder()
-            .setCustomId("marketing_consent_yes")
-            .setLabel("Marketing: Yes")
-            .setStyle(ButtonStyle.Success),
-          new ButtonBuilder()
-            .setCustomId("marketing_consent_no")
-            .setLabel("Marketing: No")
-            .setStyle(ButtonStyle.Danger),
-          new ButtonBuilder()
-            .setCustomId("marketing_consent_skip")
-            .setLabel("Skip")
-            .setStyle(ButtonStyle.Secondary)
-        );
-
         await interaction.editReply({
           content:
             `✅ Details saved. Your shop channel is ready.\n` +
-            `It will auto close after 5 minutes of inactivity.\n\n` +
-            `Optional: choose whether you want to receive future marketing updates.`,
-          components: [continueOrderRow, consentRow],
+            `It will auto close after 5 minutes of inactivity.`,
+          components: [continueOrderRow],
         });
 
         setTimeout(async () => {
@@ -5524,21 +5225,6 @@ if (addResult?.error) {
               value: order.receipt_channel_id ? `<#${order.receipt_channel_id}>` : "None",
             },
             {
-              name: "Marketing Consent",
-              value: formatConsentValue(order.marketing_consent_status),
-              inline: true,
-            },
-            {
-              name: "Consent Timestamp",
-              value: formatDiscordTimestamp(order.marketing_consent_timestamp, "None"),
-              inline: true,
-            },
-            {
-              name: "Consent Source",
-              value: order.marketing_consent_source || "None",
-              inline: true,
-            },
-            {
               name: "Shipping Info",
               value:
                 `${order.full_name || "Unknown"}\n` +
@@ -5568,7 +5254,7 @@ if (addResult?.error) {
 
         if (!lead) {
           return interaction.reply({
-            content: "Customer / lead not found.",
+            content: "Customer not found.",
             flags: 64,
           });
         }
@@ -5727,7 +5413,7 @@ if (addResult?.error) {
       }
 
       if (customId.startsWith("qty_other_modal:")) {
-        const [, , sku] = customId.split(":");
+        const [, categoryId, sku] = customId.split(":");
         const qtyRaw = interaction.fields.getTextInputValue("qty");
         const qty = parseInt(qtyRaw, 10);
 
@@ -5749,7 +5435,7 @@ if (addResult?.error) {
           });
         }
 
-        await addCartItem(interaction.user.id, {
+        const addResult = await addCartItem(interaction.user.id, {
           sku: item.sku,
           name: item.product_name,
           size: DEFAULT_SIZE,
@@ -5757,6 +5443,13 @@ if (addResult?.error) {
           qty,
           price_pence: item.price_pence,
         });
+
+        if (addResult?.error) {
+          return interaction.reply({
+            content: addResult.message,
+            flags: 64,
+          });
+        }
 
         const content = await buildCartMessage(interaction.user.id);
         await sendOrEditCartUiMessage(interaction, {
